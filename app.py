@@ -7,7 +7,7 @@ import math
 from streamlit_gsheets import GSheetsConnection
 
 # ==========================================
-# 1. UI & DESIGN ENGINE - TOTAL OVERHAUL
+# 1. UI & DESIGN ENGINE - PREMIUM GLASS
 # ==========================================
 st.set_page_config(page_title="Docplanner WFM", layout="wide", page_icon="🏥")
 
@@ -20,12 +20,12 @@ def apply_custom_design():
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Figtree:wght@300;400;500;600&display=swap');
         
-        /* Global Stage - Soft Mesh Gradient (Removes the 'too white' look) */
+        /* Global Stage - Soft Mesh Gradient */
         .stApp {{
             font-family: 'Figtree', sans-serif !important;
-            background: radial-gradient(circle at 15% 50%, rgba(0, 196, 167, 0.04), transparent 30%),
-                        radial-gradient(circle at 85% 10%, rgba(1, 30, 65, 0.03), transparent 30%),
-                        #f8fafc !important; /* Soft Ghost White base */
+            background: radial-gradient(circle at 10% 40%, rgba(0, 196, 167, 0.05), transparent 40%),
+                        radial-gradient(circle at 90% 10%, rgba(1, 30, 65, 0.04), transparent 40%),
+                        #f8fafc !important; 
         }}
 
         /* Typography */
@@ -34,13 +34,13 @@ def apply_custom_design():
         p, span, label {{ font-size: 13.5px !important; }}
 
         /* ==========================================
-           SIDEBAR & NAVIGATION FIXES
+           SIDEBAR: ADVANCED GLASSMORPHISM
         ========================================== */
-        /* Salient Glass Sidebar */
         section[data-testid="stSidebar"] {{
-            background: rgba(255, 255, 255, 0.4) !important;
-            backdrop-filter: blur(25px) saturate(150%) !important;
-            border-right: 1px solid rgba(0, 196, 167, 0.1) !important;
+            background: rgba(255, 255, 255, 0.1) !important; /* Highly transparent */
+            backdrop-filter: blur(40px) saturate(200%) !important; /* Strong glass blur */
+            border-right: 1px solid rgba(255, 255, 255, 0.4) !important; /* Light reflection edge */
+            box-shadow: 4px 0 24px rgba(0,0,0,0.02) !important;
         }}
 
         /* Hide Navigation Radio Circles SAFELY */
@@ -48,31 +48,35 @@ def apply_custom_design():
             display: none !important;
         }}
 
-        /* Modern Navigation List Style */
+        /* Compact & Transparent Navigation List */
         [data-testid="stSidebar"] div[role="radiogroup"] label {{
-            background: rgba(255,255,255, 0.5) !important;
-            padding: 10px 16px !important;
-            margin-bottom: 8px !important;
-            border-radius: 12px !important;
-            border: 1px solid rgba(0,0,0,0.02) !important;
+            background: transparent !important; /* Fully transparent base */
+            padding: 6px 12px !important; /* Reduced padding for compactness */
+            margin-bottom: 2px !important; /* Tighter spacing to prevent scroll */
+            border-radius: 8px !important;
             transition: all 0.2s ease !important;
             color: {DP_NAVY} !important;
             font-weight: 400 !important;
+            border-left: 3px solid transparent !important;
         }}
         
+        /* Hover State */
+        [data-testid="stSidebar"] div[role="radiogroup"] label:hover {{
+            background: rgba(0, 196, 167, 0.04) !important;
+        }}
+
+        /* Active Selected State */
         [data-testid="stSidebar"] div[role="radiogroup"] label[aria-checked="true"],
         [data-testid="stSidebar"] div[role="radiogroup"] label[data-checked="true"] {{
-            background: #ffffff !important;
-            border-left: 4px solid {DP_TEAL} !important;
+            background: rgba(0, 196, 167, 0.06) !important; /* Soft transparent teal tint */
+            border-left: 3px solid {DP_TEAL} !important;
             color: {DP_TEAL} !important;
             font-weight: 600 !important;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.03) !important;
         }}
 
         /* ==========================================
            RED CIRCLE REMOVAL (VIEW SETTING)
         ========================================== */
-        /* Force Teal onto Streamlit's custom SVG radio buttons */
         div[role="radiogroup"] div[data-testid="stMarkdownContainer"] ~ div[aria-checked="true"] div:first-child,
         div[role="radiogroup"] div[data-testid="stMarkdownContainer"] ~ div[data-checked="true"] div:first-child {{
             background-color: {DP_TEAL} !important;
@@ -80,28 +84,25 @@ def apply_custom_design():
         }}
 
         /* ==========================================
-           PROMPT BOXES (KILLING THE GREY HALO)
+           PROMPT BOXES (NO GREY HALOS)
         ========================================== */
-        /* 1. Strip the default grey background from the baseweb wrapper */
         div[data-baseweb="input"], 
         div[data-baseweb="base-input"],
         div[data-baseweb="select"] > div {{
-            background-color: #ffffff !important;
-            border: 1px solid rgba(0,0,0,0.04) !important;
+            background-color: rgba(255, 255, 255, 0.9) !important;
+            border: 1px solid rgba(0,0,0,0.03) !important;
             border-radius: 20px !important;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.03), 0 1px 3px rgba(0,0,0,0.02) !important;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.02), 0 1px 2px rgba(0,0,0,0.02) !important;
             padding: 2px 8px !important;
             transition: box-shadow 0.2s ease !important;
         }}
 
-        /* 2. Focus state for depth */
         div[data-baseweb="input"]:focus-within, 
         div[data-baseweb="select"] > div:focus-within {{
-            box-shadow: 0 8px 24px rgba(0, 196, 167, 0.12) !important;
-            border: 1px solid {DP_TEAL} !important;
+            box-shadow: 0 8px 20px rgba(0, 196, 167, 0.1) !important;
+            border: 1px solid rgba(0, 196, 167, 0.4) !important;
         }}
 
-        /* 3. Ensure the actual input area is transparent to blend with wrapper */
         .stTextInput input, .stNumberInput input {{
             background-color: transparent !important;
             border: none !important;
@@ -113,10 +114,10 @@ def apply_custom_design():
            METRICS & BUTTONS
         ========================================== */
         [data-testid="stMetric"] {{
-            background: rgba(255, 255, 255, 0.8) !important;
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(0, 196, 167, 0.1) !important;
-            padding: 20px !important;
+            background: rgba(255, 255, 255, 0.6) !important;
+            backdrop-filter: blur(15px);
+            border: 1px solid rgba(255, 255, 255, 0.8) !important; /* Glass edge */
+            padding: 16px !important;
             border-radius: 16px !important;
             box-shadow: 0 4px 15px rgba(0,0,0,0.02) !important;
         }}
@@ -128,7 +129,7 @@ def apply_custom_design():
             border: none !important;
             padding: 8px 24px !important;
             font-weight: 500 !important;
-            box-shadow: 0 6px 15px rgba(0, 196, 167, 0.2) !important;
+            box-shadow: 0 4px 12px rgba(0, 196, 167, 0.2) !important;
         }}
         </style>
     """, unsafe_allow_html=True)
@@ -146,7 +147,6 @@ def sync_from_cloud():
         st.session_state.master_data = conn.read(worksheet="master_data", ttl="0")
         st.session_state.exception_logs = conn.read(worksheet="exception_logs", ttl="0")
     except Exception:
-        # Emergency Fallback
         st.session_state.user_db = pd.DataFrame([{"email": "telmo.alves@docplanner.com", "password": "Memes0812", "role": "Admin"}])
         st.session_state.master_data = pd.DataFrame(columns=["Date", "Volume", "SL", "AHT", "FTE", "Country"])
         st.session_state.exception_logs = pd.DataFrame(columns=["Country", "Timestamp", "Agent", "Type", "Duration (Min)", "Notes"])
@@ -206,20 +206,23 @@ else:
     menu_options = ["Dashboard", "Forecasting", "Exception Management", "Capacity Planner (Erlang)"]
 
 with st.sidebar:
-    st.image(DP_LOGO, width=140)
+    st.image(DP_LOGO, width=130)
     st.markdown(f"**{st.session_state.current_email}**")
-    st.divider()
     
-    # Navigation Radio 
+    # Custom tight divider
+    st.markdown("<hr style='margin: 10px 0; border-color: rgba(0,0,0,0.05);'>", unsafe_allow_html=True)
+    
     menu = st.radio("Navigation", menu_options, label_visibility="collapsed")
     
-    st.divider()
+    st.markdown("<hr style='margin: 10px 0; border-color: rgba(0,0,0,0.05);'>", unsafe_allow_html=True)
+    
     view_mode = st.radio("View Setting", ["Global", "Regional Select"])
     
     selected_markets = COUNTRIES
     if view_mode == "Regional Select":
         selected_markets = st.multiselect("Select Markets", COUNTRIES, default=COUNTRIES)
     
+    st.markdown("<br>", unsafe_allow_html=True)
     if st.button("Sync Data 🔄", use_container_width=True):
         sync_from_cloud()
         st.rerun()
@@ -237,7 +240,7 @@ def calculate_erlang_c(vol, aht, target_t, agents):
 
 def render_header(title):
     icon = nav_icons.get(title, "⟢")
-    st.markdown(f'<div style="display:flex;align-items:center;gap:12px;margin-bottom:25px;"><span style="font-size:1.6rem;color:{DP_TEAL};opacity:0.8;">{icon}</span><h1>{title}</h1></div>', unsafe_allow_html=True)
+    st.markdown(f'<div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;"><span style="font-size:1.6rem;color:{DP_TEAL};opacity:0.8;">{icon}</span><h1 style="margin:0 !important;">{title}</h1></div>', unsafe_allow_html=True)
 
 # ==========================================
 # 7. MAIN MODULES
@@ -255,7 +258,7 @@ if menu == "Dashboard":
             c2.metric("Weighted SL%", f"{(df_f['Volume']*df_f['SL']).sum()/tot_v:.1f}%" if tot_v > 0 else "0%")
             c3.metric("Avg AHT", f"{int(df_f['AHT'].mean()) if tot_v > 0 else 0}s")
             c4.metric("Actual FTE", f"{df_f['FTE'].sum():,.1f}")
-            st.divider()
+            st.markdown("<hr style='margin: 20px 0; border-color: rgba(0,0,0,0.05);'>", unsafe_allow_html=True)
             st.plotly_chart(px.line(df_f, x='Date', y='Volume', color='Country', template="plotly_white"), use_container_width=True)
         else:
             st.info("No data matches the selected filters.")
@@ -293,7 +296,6 @@ elif menu == "Exception Management":
 
 elif menu == "Capacity Planner (Erlang)":
     render_header("Capacity Engine")
-    
     col1, col2 = st.columns(2)
     with col1:
         v_h = st.number_input("Peak Period Volume", value=200, min_value=1)
@@ -307,7 +309,7 @@ elif menu == "Capacity Planner (Erlang)":
         while ach < s_t and req < 500:
             ach = calculate_erlang_c(v_h, a_s, 20, req)
             if ach < s_t: req += 1
-        st.divider()
+        st.markdown("<hr style='margin: 20px 0; border-color: rgba(0,0,0,0.05);'>", unsafe_allow_html=True)
         st.metric("Recommended FTE Capacity", f"{math.ceil(req / (1 - sh))} Agents")
 
 elif menu == "Admin Panel":
@@ -329,7 +331,6 @@ elif menu == "Admin Panel":
 
 elif menu == "System Status":
     render_header("Infrastructure Health")
-    
     c1, c2, c3 = st.columns(3)
     c1.metric("Cloud Link", "Stable")
     c2.metric("Database Rows", len(st.session_state.master_data))
