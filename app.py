@@ -37,22 +37,20 @@ def apply_custom_design():
            SIDEBAR: ADVANCED GLASSMORPHISM
         ========================================== */
         section[data-testid="stSidebar"] {{
-            background: rgba(255, 255, 255, 0.1) !important; /* Highly transparent */
-            backdrop-filter: blur(40px) saturate(200%) !important; /* Strong glass blur */
-            border-right: 1px solid rgba(255, 255, 255, 0.4) !important; /* Light reflection edge */
+            background: rgba(255, 255, 255, 0.1) !important;
+            backdrop-filter: blur(40px) saturate(200%) !important;
+            border-right: 1px solid rgba(255, 255, 255, 0.4) !important;
             box-shadow: 4px 0 24px rgba(0,0,0,0.02) !important;
         }}
 
-        /* Hide Navigation Radio Circles SAFELY */
         [data-testid="stSidebar"] div[role="radiogroup"] label > div:first-child {{
             display: none !important;
         }}
 
-        /* Compact & Transparent Navigation List */
         [data-testid="stSidebar"] div[role="radiogroup"] label {{
-            background: transparent !important; /* Fully transparent base */
-            padding: 6px 12px !important; /* Reduced padding for compactness */
-            margin-bottom: 2px !important; /* Tighter spacing to prevent scroll */
+            background: transparent !important;
+            padding: 6px 12px !important;
+            margin-bottom: 2px !important;
             border-radius: 8px !important;
             transition: all 0.2s ease !important;
             color: {DP_NAVY} !important;
@@ -60,23 +58,18 @@ def apply_custom_design():
             border-left: 3px solid transparent !important;
         }}
         
-        /* Hover State */
         [data-testid="stSidebar"] div[role="radiogroup"] label:hover {{
             background: rgba(0, 196, 167, 0.04) !important;
         }}
 
-        /* Active Selected State */
         [data-testid="stSidebar"] div[role="radiogroup"] label[aria-checked="true"],
         [data-testid="stSidebar"] div[role="radiogroup"] label[data-checked="true"] {{
-            background: rgba(0, 196, 167, 0.06) !important; /* Soft transparent teal tint */
+            background: rgba(0, 196, 167, 0.06) !important;
             border-left: 3px solid {DP_TEAL} !important;
             color: {DP_TEAL} !important;
             font-weight: 600 !important;
         }}
 
-        /* ==========================================
-           RED CIRCLE REMOVAL (VIEW SETTING)
-        ========================================== */
         div[role="radiogroup"] div[data-testid="stMarkdownContainer"] ~ div[aria-checked="true"] div:first-child,
         div[role="radiogroup"] div[data-testid="stMarkdownContainer"] ~ div[data-checked="true"] div:first-child {{
             background-color: {DP_TEAL} !important;
@@ -116,7 +109,7 @@ def apply_custom_design():
         [data-testid="stMetric"] {{
             background: rgba(255, 255, 255, 0.6) !important;
             backdrop-filter: blur(15px);
-            border: 1px solid rgba(255, 255, 255, 0.8) !important; /* Glass edge */
+            border: 1px solid rgba(255, 255, 255, 0.8) !important;
             padding: 16px !important;
             border-radius: 16px !important;
             box-shadow: 0 4px 15px rgba(0,0,0,0.02) !important;
@@ -137,16 +130,29 @@ def apply_custom_design():
 apply_custom_design()
 
 # ==========================================
-# 2. DATABASE CONNECTION & SYNC
+# 2. DATABASE CONNECTION & SYNC (FAILSAFE ADDED)
 # ==========================================
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def sync_from_cloud():
     try:
+        # Load User DB
         st.session_state.user_db = conn.read(worksheet="user_db", ttl="0")
-        st.session_state.master_data = conn.read(worksheet="master_data", ttl="0")
-        st.session_state.exception_logs = conn.read(worksheet="exception_logs", ttl="0")
+        
+        # Load Master Data & Enforce Columns if the sheet is blank
+        md = conn.read(worksheet="master_data", ttl="0")
+        if 'Country' not in md.columns:
+            md = pd.DataFrame(columns=["Date", "Volume", "SL", "AHT", "FTE", "Country"])
+        st.session_state.master_data = md
+        
+        # Load Exceptions & Enforce Columns if the sheet is blank
+        el = conn.read(worksheet="exception_logs", ttl="0")
+        if 'Country' not in el.columns:
+            el = pd.DataFrame(columns=["Country", "Timestamp", "Agent", "Type", "Duration (Min)", "Notes"])
+        st.session_state.exception_logs = el
+        
     except Exception:
+        # Emergency local fallback
         st.session_state.user_db = pd.DataFrame([{"email": "telmo.alves@docplanner.com", "password": "Memes0812", "role": "Admin"}])
         st.session_state.master_data = pd.DataFrame(columns=["Date", "Volume", "SL", "AHT", "FTE", "Country"])
         st.session_state.exception_logs = pd.DataFrame(columns=["Country", "Timestamp", "Agent", "Type", "Duration (Min)", "Notes"])
@@ -209,11 +215,8 @@ with st.sidebar:
     st.image(DP_LOGO, width=130)
     st.markdown(f"**{st.session_state.current_email}**")
     
-    # Custom tight divider
     st.markdown("<hr style='margin: 10px 0; border-color: rgba(0,0,0,0.05);'>", unsafe_allow_html=True)
-    
     menu = st.radio("Navigation", menu_options, label_visibility="collapsed")
-    
     st.markdown("<hr style='margin: 10px 0; border-color: rgba(0,0,0,0.05);'>", unsafe_allow_html=True)
     
     view_mode = st.radio("View Setting", ["Global", "Regional Select"])
@@ -248,7 +251,7 @@ def render_header(title):
 if menu == "Dashboard":
     render_header("Performance Overview")
     df = st.session_state.master_data
-    if not df.empty:
+    if not df.empty and 'Country' in df.columns:
         df_f = df[df['Country'].isin(selected_markets)].copy()
         if not df_f.empty:
             for c in ['Volume', 'SL', 'AHT', 'FTE']: df_f[c] = pd.to_numeric(df_f[c], errors='coerce').fillna(0)
@@ -271,7 +274,14 @@ elif menu == "Import Data":
     up = st.file_uploader("Drop Market CSV File", type="csv")
     if up:
         new_df = pd.read_csv(up)
+        # Clean uploaded columns to avoid typos
+        new_df.columns = new_df.columns.str.strip()
         new_df['Country'] = target
+        
+        # Failsafe: Ensure master_data has a Country column before filtering
+        if 'Country' not in st.session_state.master_data.columns:
+            st.session_state.master_data = pd.DataFrame(columns=["Date", "Volume", "SL", "AHT", "FTE", "Country"])
+            
         st.session_state.master_data = pd.concat([st.session_state.master_data[st.session_state.master_data['Country'] != target], new_df], ignore_index=True)
         conn.update(worksheet="master_data", data=st.session_state.master_data)
         st.success(f"Successfully synchronized {target} data with Google Sheets.")
@@ -338,7 +348,7 @@ elif menu == "System Status":
 
 elif menu == "Reporting Center":
     render_header("Data Exports")
-    if not st.session_state.master_data.empty:
+    if not st.session_state.master_data.empty and 'Country' in st.session_state.master_data.columns:
         csv = st.session_state.master_data.to_csv(index=False).encode('utf-8')
         st.download_button("Export Global Master Data (CSV)", data=csv, file_name="WFM_Global_Export.csv", mime="text/csv")
     else:
