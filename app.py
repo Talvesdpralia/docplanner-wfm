@@ -6,8 +6,8 @@ from datetime import datetime
 import math
 from streamlit_gsheets import GSheetsConnection
 
-# 1. UI & DESIGN ENGINE - REFINED GEMINI GLASS
-st.set_page_config(page_title="Docplanner WFM", layout="wide", page_icon="🏥")
+# 1. DESIGN ENGINE - THE ULTIMATE UI CLEANUP
+st.set_page_config(page_title="Docplanner WFM Pro", layout="wide", page_icon="🏥")
 
 DP_TEAL = "#00c4a7"
 DP_NAVY = "#011e41"
@@ -18,71 +18,112 @@ def apply_custom_design():
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Figtree:wght@300;400;500;600&display=swap');
         
-        /* Global Stage - Mesh Gradient Background */
+        /* Global Stage - Mesh Background */
         html, body, [class*="css"], .stApp {{
             font-family: 'Figtree', sans-serif !important;
             font-size: 14px !important;
-            background: radial-gradient(at 0% 0%, rgba(0, 196, 167, 0.04) 0px, transparent 50%),
-                        radial-gradient(at 100% 100%, rgba(1, 30, 65, 0.03) 0px, transparent 50%),
+            background: radial-gradient(at 0% 0%, rgba(0, 196, 167, 0.03) 0px, transparent 50%),
+                        radial-gradient(at 100% 100%, rgba(1, 30, 65, 0.02) 0px, transparent 50%),
                         #ffffff !important;
         }}
 
-        /* SALIENT GLASS SIDEBAR */
-        section[data-testid="stSidebar"] {{
-            background: rgba(255, 255, 255, 0.05) !important;
-            backdrop-filter: blur(50px) saturate(180%) !important;
-            border-right: 1px solid rgba(0, 196, 167, 0.15) !important;
+        /* KILL ALL DEFAULT GREY BORDERS & RED ACCENTS */
+        :root {{
+            --primary-color: {DP_TEAL} !important;
+        }}
+        
+        /* Remove the red circle from ALL radio buttons (Navigation + View) */
+        div[data-testid="stMarkdownContainer"] p {{
+            font-weight: 300;
+        }}
+        
+        /* Force Teal Accent on all inputs */
+        input[type="radio"] {{
+            accent-color: {DP_TEAL} !important;
         }}
 
-        /* REALISTIC PROMPT BOX SHADOWS */
-        .stTextInput input, .stSelectbox div[data-baseweb="select"], .stNumberInput input, .stMultiSelect div[data-baseweb="select"] {{
+        /* HIDE NAVIGATION RADIO CIRCLES COMPLETELY */
+        [data-testid="stSidebar"] div[role="radiogroup"] label div:first-child {{
+            display: none !important;
+        }}
+
+        /* SIDEBAR - DEEP GLASS & CLEAN NAV */
+        section[data-testid="stSidebar"] {{
+            background: rgba(255, 255, 255, 0.02) !important;
+            backdrop-filter: blur(50px) saturate(190%) !important;
+            border-right: 1px solid rgba(0, 0, 0, 0.05) !important;
+        }}
+
+        [data-testid="stSidebar"] div[role="radiogroup"] label {{
+            padding: 12px 16px !important;
+            margin: 6px 0px !important;
+            border-radius: 12px !important;
+            transition: all 0.3s ease !important;
+            font-weight: 300 !important;
+            color: {DP_NAVY} !important;
+        }}
+
+        [data-testid="stSidebar"] div[role="radiogroup"] label[data-checked="true"] {{
+            background: rgba(0, 196, 167, 0.08) !important;
+            color: {DP_TEAL} !important;
+            font-weight: 500 !important;
+        }}
+
+        /* CLEAN PROMPT BOXES - REMOVING ALL GREY HALOS */
+        /* Targets Text, Number, and Dropdown (Selectbox) inputs */
+        .stTextInput input, .stSelectbox div[data-baseweb="select"], 
+        .stNumberInput input, .stMultiSelect div[data-baseweb="select"] {{
             background-color: #ffffff !important;
-            border: 1px solid rgba(0, 0, 0, 0.02) !important;
-            border-radius: 20px !important; 
+            border: none !important; 
+            outline: none !important;
+            border-radius: 24px !important; 
             padding: 10px 18px !important;
-            /* Multi-layered soft shadow for depth */
-            box-shadow: 
-                0 2px 4px rgba(0,0,0,0.01), 
-                0 10px 20px rgba(0,0,0,0.03),
-                0 20px 40px rgba(0,0,0,0.02) !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.01), 0 8px 16px rgba(0,0,0,0.04) !important;
             transition: all 0.3s ease !important;
         }}
         
-        .stTextInput input:focus {{
-            border: 1px solid {DP_TEAL} !important;
-            box-shadow: 0 10px 30px rgba(0, 196, 167, 0.1) !important;
+        /* Target the wrapper that often causes the 'grey halo' */
+        div[data-baseweb="input"], div[data-baseweb="select"] {{
+            border: none !important;
+            background: transparent !important;
+            box-shadow: none !important;
         }}
 
-        /* Typography - Thin & Clean */
-        h1 {{ font-weight: 300 !important; font-size: 1.8rem !important; color: {DP_NAVY}; letter-spacing: -0.5px; }}
-        h2 {{ font-weight: 400 !important; font-size: 1.1rem !important; color: {DP_SLATE}; }}
+        .stTextInput input:focus, .stSelectbox div[data-baseweb="select"]:focus {{
+            box-shadow: 0 10px 30px rgba(0, 196, 167, 0.12) !important;
+            transform: translateY(-1px);
+        }}
 
-        /* Metric Glass Cards */
+        /* Metrics Glass Style */
         [data-testid="stMetric"] {{
-            background: rgba(255, 255, 255, 0.8) !important;
+            background: rgba(255, 255, 255, 0.7) !important;
             backdrop-filter: blur(10px);
             border: 1px solid rgba(0, 196, 167, 0.1) !important;
             padding: 20px !important;
-            border-radius: 16px !important;
-            box-shadow: 0 8px 24px rgba(0,0,0,0.03) !important;
+            border-radius: 20px !important;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.03) !important;
         }}
 
-        /* Action Buttons */
+        /* Titles - Thin & Modern */
+        h1 {{ font-weight: 300 !important; font-size: 1.8rem !important; color: {DP_NAVY}; }}
+        h2 {{ font-weight: 400 !important; font-size: 1.1rem !important; color: {DP_SLATE}; }}
+
+        /* Button Styling */
         .stButton>button {{
             background: {DP_TEAL} !important;
             color: white !important;
-            border-radius: 20px !important;
+            border-radius: 24px !important;
             border: none !important;
-            padding: 10px 28px !important;
+            padding: 10px 30px !important;
             font-weight: 500 !important;
-            box-shadow: 0 6px 20px rgba(0, 196, 167, 0.2) !important;
+            box-shadow: 0 6px 15px rgba(0, 196, 167, 0.25) !important;
         }}
         </style>
     """, unsafe_allow_html=True)
 
 apply_custom_design()
 
-# 2. DATABASE CONNECTION
+# 2. DATABASE CONNECTION (GOOGLE SHEETS)
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def sync_from_cloud():
@@ -91,6 +132,7 @@ def sync_from_cloud():
         st.session_state.master_data = conn.read(worksheet="master_data", ttl="0")
         st.session_state.exception_logs = conn.read(worksheet="exception_logs", ttl="0")
     except:
+        # Fallback super admin account
         st.session_state.user_db = pd.DataFrame([{"email": "telmo.alves@docplanner.com", "password": "Memes0812", "role": "Admin"}])
 
 if 'logged_in' not in st.session_state:
@@ -121,7 +163,7 @@ if not st.session_state.logged_in:
             else: st.error("Authentication failed.")
     st.stop()
 
-# 5. SIDEBAR NAVIGATION
+# 5. SIDEBAR NAVIGATION - ALL OPTIONS SHOWING
 role = st.session_state.user_role
 nav_icons = {
     "Dashboard": "⟢", "Import Data": "⤓", "Forecasting": "📈", 
@@ -129,7 +171,7 @@ nav_icons = {
     "Reporting Center": "▤", "Admin Panel": "⚙", "System Status": "🛡"
 }
 
-# Building Explicit Menu
+# Full Admin Menu
 if role == "Admin":
     menu_options = ["Dashboard", "Import Data", "Forecasting", "Exception Management", "Capacity Planner (Erlang)", "Reporting Center", "Admin Panel", "System Status"]
 else:
@@ -140,16 +182,17 @@ with st.sidebar:
     st.markdown(f"**{st.session_state.current_email}**")
     st.divider()
     
-    # Navigation Choice - Using Selectbox to ensure Visibility
-    menu = st.selectbox("Select workspace", menu_options)
+    # Navigation Radio - All options visible, circles hidden
+    menu = st.radio("Navigation Menu", menu_options)
     
     st.divider()
+    # View Setting Radio - Accented teal circle
     view_mode = st.radio("View Setting", ["Global", "Regional Select"])
     selected_markets = COUNTRIES
     if view_mode == "Regional Select":
         selected_markets = st.multiselect("Markets", COUNTRIES, default=COUNTRIES)
     
-    if st.button("Sync Refresh 🔄", use_container_width=True):
+    if st.button("Sync Data 🔄", use_container_width=True):
         sync_from_cloud()
         st.rerun()
 
@@ -162,9 +205,9 @@ def calculate_erlang_c(vol, aht, target_t, agents):
     prob_w = numerator / (sum_inv + numerator)
     return 1 - (prob_w * math.exp(-(agents - intensity) * (target_t / aht)))
 
-# 7. MODULES
+# 7. MAIN INTERFACE MODULES
 def render_header(title, icon):
-    st.markdown(f'<div style="display:flex;align-items:center;gap:12px;margin-bottom:30px;"><span style="font-size:1.8rem;color:{DP_TEAL};opacity:0.8;">{icon}</span><h1>{title}</h1></div>', unsafe_allow_html=True)
+    st.markdown(f'<div style="display:flex;align-items:center;gap:12px;margin-bottom:30px;"><span style="font-size:1.6rem;color:{DP_TEAL};opacity:0.8;">{icon}</span><h1>{title}</h1></div>', unsafe_allow_html=True)
 
 if menu == "Dashboard":
     render_header("Performance Overview", nav_icons["Dashboard"])
@@ -197,7 +240,7 @@ elif menu == "Import Data":
 elif menu == "Admin Panel":
     render_header("Authority & Access", nav_icons["Admin Panel"])
     with st.form("user_add"):
-        n_e = st.text_input("New Email")
+        n_e = st.text_input("New User Email")
         n_p = st.text_input("Password")
         n_r = st.selectbox("Role", ["Admin", "Manager", "User"])
         if st.form_submit_button("Grant Access"):
@@ -207,4 +250,20 @@ elif menu == "Admin Panel":
             st.success("User added.")
     st.dataframe(st.session_state.user_db[['email', 'role']], use_container_width=True)
 
-# ... Additional modules follow same render_header pattern ...
+elif menu == "Capacity Planner (Erlang)":
+    render_header("Staffing Requirement Engine", nav_icons["Capacity Planner (Erlang)"])
+        col1, col2 = st.columns(2)
+    with col1:
+        v_h = st.number_input("Peak Period Volume", value=200)
+        a_s = st.number_input("Target AHT (Seconds)", value=300)
+    with col2:
+        s_t = st.slider("Service Level Target %", 50, 99, 80) / 100
+        sh = st.slider("Shrinkage %", 0, 50, 20) / 100
+    if v_h > 0:
+        req = math.ceil((v_h * a_s) / 3600) + 1
+        ach = 0
+        while ach < s_t and req < 500:
+            ach = calculate_erlang_c(v_h, a_s, 20, req)
+            if ach < s_t: req += 1
+        st.divider()
+        st.metric("Recommended FTE Capacity", f"{math.ceil(req / (1 - sh))} FTE")
