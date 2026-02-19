@@ -30,7 +30,7 @@ def apply_custom_design():
         }}
         h1 {{ font-weight: 300 !important; font-size: 1.7rem !important; color: {DP_NAVY}; letter-spacing: -0.5px; }}
         h2, h3 {{ font-weight: 400 !important; font-size: 1.1rem !important; color: {DP_SLATE}; }}
-        p, span, label {{ font-size: 13.5px !important; }}
+        p, span, label, div[data-baseweb="select"] {{ font-size: 13.5px !important; }}
 
         /* SIDEBAR GLASS */
         section[data-testid="stSidebar"] {{
@@ -42,7 +42,7 @@ def apply_custom_design():
         [data-testid="stSidebar"] div[role="radiogroup"] label > div:first-child {{ display: none !important; }}
         [data-testid="stSidebar"] div[role="radiogroup"] label {{
             background: transparent !important;
-            padding: 6px 12px !important; margin-bottom: 2px !important; border-radius: 8px !important;
+            padding: 8px 12px !important; margin-bottom: 2px !important; border-radius: 8px !important;
             transition: all 0.2s ease !important; color: {DP_NAVY} !important; font-weight: 400 !important;
             border-left: 3px solid transparent !important;
         }}
@@ -234,7 +234,9 @@ if menu == "Dashboard":
         df_f = df[df['Country'].isin(selected_markets)].copy()
         
         if not df_f.empty:
-            for c in ['Volume', 'SL', 'AHT', 'FTE']: df_f[c] = pd.to_numeric(df_f[c], errors='coerce').fillna(0)
+            # FIXED: Now strictly enforcing SLA instead of SL to match the template!
+            for c in ['Volume', 'SLA', 'AHT', 'FTE']: 
+                df_f[c] = pd.to_numeric(df_f[c], errors='coerce').fillna(0)
             
             tot_v = df_f['Volume'].sum()
             avg_fte = df_f['FTE'].mean()
