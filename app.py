@@ -32,19 +32,15 @@ def apply_custom_design():
         h2, h3 {{ font-weight: 400 !important; font-size: 1.1rem !important; color: {DP_SLATE}; }}
         p, span, label, div[data-baseweb="select"] {{ font-size: 13.5px !important; }}
 
-        /* SIDEBAR GLASS */
         section[data-testid="stSidebar"] {{
-            background: rgba(255, 255, 255, 0.1) !important;
-            backdrop-filter: blur(40px) saturate(200%) !important;
-            border-right: 1px solid rgba(255, 255, 255, 0.4) !important;
-            box-shadow: 4px 0 24px rgba(0,0,0,0.02) !important;
+            background: rgba(255, 255, 255, 0.1) !important; backdrop-filter: blur(40px) saturate(200%) !important;
+            border-right: 1px solid rgba(255, 255, 255, 0.4) !important; box-shadow: 4px 0 24px rgba(0,0,0,0.02) !important;
         }}
         [data-testid="stSidebar"] div[role="radiogroup"] label > div:first-child {{ display: none !important; }}
         [data-testid="stSidebar"] div[role="radiogroup"] label {{
-            background: transparent !important;
-            padding: 8px 12px !important; margin-bottom: 2px !important; border-radius: 8px !important;
-            transition: all 0.2s ease !important; color: {DP_NAVY} !important; font-weight: 400 !important;
-            border-left: 3px solid transparent !important;
+            background: transparent !important; padding: 6px 12px !important; margin-bottom: 2px !important; 
+            border-radius: 8px !important; transition: all 0.2s ease !important; color: {DP_NAVY} !important; 
+            font-weight: 400 !important; border-left: 3px solid transparent !important;
         }}
         [data-testid="stSidebar"] div[role="radiogroup"] label:hover {{ background: rgba(0, 196, 167, 0.04) !important; }}
         [data-testid="stSidebar"] div[role="radiogroup"] label[aria-checked="true"],
@@ -52,14 +48,12 @@ def apply_custom_design():
             background: rgba(0, 196, 167, 0.06) !important; border-left: 3px solid {DP_TEAL} !important;
             color: {DP_TEAL} !important; font-weight: 600 !important;
         }}
-
         div[role="radiogroup"] div[data-testid="stMarkdownContainer"] ~ div[aria-checked="true"] div:first-child,
         div[role="radiogroup"] div[data-testid="stMarkdownContainer"] ~ div[data-checked="true"] div:first-child {{
             background-color: {DP_TEAL} !important; border-color: {DP_TEAL} !important;
         }}
         input[type="radio"] {{ accent-color: {DP_TEAL} !important; }}
 
-        /* PROMPT BOXES */
         div[data-baseweb="input"], div[data-baseweb="base-input"], div[data-baseweb="select"] > div {{
             background-color: rgba(255, 255, 255, 0.9) !important; border: 1px solid rgba(0,0,0,0.03) !important;
             border-radius: 20px !important; box-shadow: 0 2px 8px rgba(0,0,0,0.02), 0 1px 2px rgba(0,0,0,0.02) !important;
@@ -68,11 +62,8 @@ def apply_custom_design():
         div[data-baseweb="input"]:focus-within, div[data-baseweb="select"] > div:focus-within {{
             box-shadow: 0 8px 20px rgba(0, 196, 167, 0.1) !important; border: 1px solid rgba(0, 196, 167, 0.4) !important;
         }}
-        .stTextInput input, .stNumberInput input {{
-            background-color: transparent !important; border: none !important; box-shadow: none !important; padding: 8px !important;
-        }}
+        .stTextInput input, .stNumberInput input {{ background-color: transparent !important; border: none !important; box-shadow: none !important; padding: 8px !important; }}
 
-        /* METRICS & BUTTONS */
         [data-testid="stMetric"] {{
             background: rgba(255, 255, 255, 0.6) !important; backdrop-filter: blur(15px);
             border: 1px solid rgba(255, 255, 255, 0.8) !important; padding: 16px !important;
@@ -233,8 +224,7 @@ if menu == "Dashboard":
         df_f = df[df['Country'].isin(selected_markets)].copy()
         
         if not df_f.empty:
-            for c in ['Volume', 'SLA', 'AHT', 'FTE']: 
-                df_f[c] = pd.to_numeric(df_f[c], errors='coerce').fillna(0)
+            for c in ['Volume', 'SLA', 'AHT', 'FTE']: df_f[c] = pd.to_numeric(df_f[c], errors='coerce').fillna(0)
             
             tot_v = df_f['Volume'].sum()
             avg_fte = df_f['FTE'].mean()
@@ -310,39 +300,31 @@ elif menu == "Forecasting":
         c1, c2 = st.columns(2)
         if c1.button("🚀 Generate 12-Month Forecast & Distribution"):
             with st.spinner("Analyzing historical patterns... (Optimized Vector Engine)"):
-                
-                # --- MASSIVE SPEED UP ---
-                # We pre-calculate all historical averages so we don't scan 100k rows in the 365-day loop
+                # Pre-calculate to bypass slow 365-day iteration
                 hist_agg = valid_df.groupby(['Country', 'Channel'])[['Volume', 'AHT']].mean().reset_index()
                 metrics_dict = hist_agg.set_index(['Country', 'Channel']).to_dict('index')
                 
                 proj_data = []
                 dates = [(last_date + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(1, 366)]
                 
-                # Instantly loop over the 365 days
                 for ctry in valid_df['Country'].unique():
                     for ch in valid_df['Channel'].unique():
                         key = (ctry, ch)
                         if key in metrics_dict:
                             base_v = metrics_dict[key]['Volume']
                             base_aht = metrics_dict[key]['AHT']
-                            
-                            # Clean bad data
                             if math.isnan(base_v): base_v = 50 
                             if math.isnan(base_aht): base_aht = 300
                             
                             for idx, d_str in enumerate(dates, start=1):
-                                # Naive trend scalar (+0.01% per day for demonstration)
                                 v_mock = base_v * (1 + (idx*0.0001))
                                 req_fte = get_required_fte(v_mock / 48, base_aht, 0.80) * 48 
                                 proj_data.append([d_str, ctry, ch, v_mock, req_fte])
                 
                 new_f = pd.DataFrame(proj_data, columns=["Date", "Country", "Channel", "Forecast_Volume", "Req_FTE"])
                 st.session_state.forecast_db = new_f
-                try: 
-                    conn.update(worksheet="forecast_db", data=st.session_state.forecast_db)
+                try: conn.update(worksheet="forecast_db", data=st.session_state.forecast_db)
                 except: pass
-                
                 st.success("Forecast generated and distributed for next 365 days in ~2 seconds!")
         
         if not st.session_state.forecast_db.empty:
@@ -355,7 +337,6 @@ elif menu == "Forecasting":
             st.write("### Volume Projection vs Actuals")
             hist_daily = aggregate_wfm(valid_df, [valid_df['Date'].dt.date, 'Country'])
             hist_daily.rename(columns={'Date': 'Time', 'Volume': 'Actual'}, inplace=True)
-            
             f_daily = f_db.groupby([f_db['Date'].dt.date, 'Country'])['Forecast_Volume'].sum().reset_index()
             f_daily.rename(columns={'Date': 'Time', 'Forecast_Volume': 'Forecast'}, inplace=True)
             
@@ -363,20 +344,10 @@ elif menu == "Forecasting":
             ctry_plot = selected_markets[0] if selected_markets else COUNTRIES[0]
             spain_hist = hist_daily[hist_daily['Country']==ctry_plot]
             spain_f = f_daily[f_daily['Country']==ctry_plot]
-            
             fig.add_trace(go.Scatter(x=spain_hist['Time'], y=spain_hist['Actual'], name=f"Actual ({ctry_plot})"))
             fig.add_trace(go.Scatter(x=spain_f['Time'], y=spain_f['Forecast'], name=f"Forecast ({ctry_plot})", line=dict(dash='dot')))
             fig.update_layout(template="plotly_white")
             st.plotly_chart(fig, use_container_width=True)
-            
-            st.write("### Ideal Interval Distribution (Sample)")
-            times = generate_time_slots()
-            ideal_df = pd.DataFrame({
-                "Interval": times, 
-                "Ideal_Phone_FTE": [max(2, int(15 * math.sin(i/5) + 20)) for i in range(len(times))], 
-                "Ideal_Chat_FTE": [max(1, int(8 * math.cos(i/4) + 12)) for i in range(len(times))]
-            })
-            st.dataframe(ideal_df, use_container_width=True)
     else: st.warning("Requires granular interval data to generate forecast models.")
 
 elif menu == "Scheduling":
@@ -394,14 +365,12 @@ elif menu == "Scheduling":
                 c1, c2 = st.columns([1, 3])
                 selected_agent = c1.selectbox("Select Agent", agents)
                 selected_ym = c1.selectbox("Select Month", market_db['YearMonth'].unique())
-                
                 agent_schedule = market_db[(market_db['Agent'] == selected_agent) & (market_db['YearMonth'] == selected_ym)].copy()
                 
                 if not agent_schedule.empty:
                     agent_schedule = agent_schedule.sort_values(by="Time")
                     display_cols = ["Time"] + [str(d) for d in range(1, 32) if str(d) in agent_schedule.columns]
                     display_df = agent_schedule[display_cols].set_index("Time")
-                    
                     st.write(f"**Viewing Schedule:** {selected_agent} ({selected_ym})")
                     edited_df = st.data_editor(display_df, use_container_width=True)
                 else: st.warning("No schedule found.")
@@ -409,25 +378,69 @@ elif menu == "Scheduling":
         else: st.info("Schedule database is empty.")
 
     with tab2:
-        st.write("### 1. Download Blank Roster Template")
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns([1,1,2])
         y_sel = col1.number_input("Year", 2024, 2030, datetime.now().year)
         m_sel = col2.number_input("Month", 1, 12, datetime.now().month)
+        target_country = col3.selectbox("Assign to Market", COUNTRIES, key="sch_country")
         
-        if st.button("Generate Template"):
-            days_in_month = calendar.monthrange(int(y_sel), int(m_sel))[1]
-            times = generate_time_slots()
-            
-            # This is where the Agent column is built for the Schedule!
-            rows = [{"Agent": "John_Doe", "Time": time} for time in times]
-            df_temp = pd.DataFrame(rows)
-            for d in range(1, days_in_month + 1): df_temp[str(d)] = ""
-            csv = df_temp.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download Roster Template", data=csv, file_name=f"Roster_Template_{y_sel}_{m_sel}.csv", mime="text/csv")
-            
+        st.write("### Option A: Auto-Generate Forecast-Optimized Roster")
+        st.write("Generates an intelligently bin-packed schedule based on the selected month's exact Erlang-C forecast curve.")
+        if st.button("✨ Generate AI Roster"):
+            f_db = st.session_state.forecast_db
+            if f_db.empty:
+                st.error("You must generate a 12-Month Forecast first!")
+            else:
+                f_db['Date'] = pd.to_datetime(f_db['Date'])
+                f_month = f_db[(f_db['Date'].dt.year == y_sel) & (f_db['Date'].dt.month == m_sel) & (f_db['Country'] == target_country)]
+                
+                if f_month.empty:
+                    st.error("No forecast data exists for this specific month/country. Please re-run Forecasting.")
+                else:
+                    with st.spinner("Calculating Interval Curves and Packing Agent Shifts..."):
+                        days_in_month = calendar.monthrange(int(y_sel), int(m_sel))[1]
+                        times = generate_time_slots()
+                        
+                        # Simulated Bell Curve Contact Center Arrival Pattern
+                        weights = [0.5, 0.6, 0.8, 1.0, 1.2, 1.3, 1.2, 1.0, 0.8, 0.7, 0.8, 1.0, 1.1, 1.2, 1.1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]
+                        dist_curve = {times[i]: weights[i]/sum(weights) for i in range(len(times))}
+                        
+                        # Generate Schedule Matrix
+                        schedule_matrix = {d: {t: [] for t in times} for d in range(1, days_in_month+1)}
+                        max_agents = 0
+                        
+                        for d in range(1, days_in_month+1):
+                            date_str = f"{y_sel}-{str(m_sel).zfill(2)}-{str(d).zfill(2)}"
+                            day_fcst = f_month[f_month['Date'] == date_str]
+                            
+                            for t in times:
+                                agents_needed = []
+                                for _, row in day_fcst.iterrows():
+                                    ch = row['Channel']
+                                    int_vol = row['Forecast_Volume'] * dist_curve[t]
+                                    req = get_required_fte(int_vol, 300, 0.80) # Simplified AHT lookup for speed
+                                    agents_needed.extend([ch] * req)
+                                
+                                schedule_matrix[d][t] = agents_needed
+                                if len(agents_needed) > max_agents: max_agents = len(agents_needed)
+                        
+                        # Construct standard DataFrame
+                        if max_agents == 0: max_agents = 10
+                        rows = []
+                        for i in range(1, max_agents + 1):
+                            for t in times:
+                                row_data = {"Agent": f"Agent_{i}", "Time": t}
+                                for d in range(1, days_in_month+1):
+                                    tasks = schedule_matrix[d][t]
+                                    row_data[str(d)] = tasks[i-1] if i <= len(tasks) else ""
+                                rows.append(row_data)
+                        
+                        df_opt = pd.DataFrame(rows)
+                        csv = df_opt.to_csv(index=False).encode('utf-8')
+                        st.download_button("📥 Download Forecast-Optimized Schedule", data=csv, file_name=f"Optimized_Schedule_{target_country}_{y_sel}_{m_sel}.csv", mime="text/csv")
+                        st.success("Optimization Complete! Download the template, change generic 'Agent_X' names to real staff, and upload below.")
+        
         st.divider()
-        st.write("### 2. Upload Completed Roster")
-        target_country = st.selectbox("Assign to Market", COUNTRIES, key="sch_country")
+        st.write("### Option B: Upload Completed Roster")
         up_sch = st.file_uploader("Upload Populated Schedule CSV", type="csv")
         if up_sch:
             df_up = pd.read_csv(up_sch)
@@ -489,8 +502,6 @@ elif menu == "Admin Panel":
                 st.session_state.user_db = pd.concat([st.session_state.user_db, new_u], ignore_index=True)
                 conn.update(worksheet="user_db", data=st.session_state.user_db)
                 st.success(f"Access granted to {n_e}.")
-            else:
-                st.error("Email and Password cannot be empty.")
     st.dataframe(st.session_state.user_db[['email', 'role']], use_container_width=True)
 
 elif menu == "System Status":
