@@ -32,15 +32,19 @@ def apply_custom_design():
         h2, h3 {{ font-weight: 400 !important; font-size: 1.1rem !important; color: {DP_SLATE}; }}
         p, span, label, div[data-baseweb="select"] {{ font-size: 13.5px !important; }}
 
+        /* SIDEBAR GLASS */
         section[data-testid="stSidebar"] {{
-            background: rgba(255, 255, 255, 0.1) !important; backdrop-filter: blur(40px) saturate(200%) !important;
-            border-right: 1px solid rgba(255, 255, 255, 0.4) !important; box-shadow: 4px 0 24px rgba(0,0,0,0.02) !important;
+            background: rgba(255, 255, 255, 0.1) !important;
+            backdrop-filter: blur(40px) saturate(200%) !important;
+            border-right: 1px solid rgba(255, 255, 255, 0.4) !important;
+            box-shadow: 4px 0 24px rgba(0,0,0,0.02) !important;
         }}
         [data-testid="stSidebar"] div[role="radiogroup"] label > div:first-child {{ display: none !important; }}
         [data-testid="stSidebar"] div[role="radiogroup"] label {{
-            background: transparent !important; padding: 6px 12px !important; margin-bottom: 2px !important; 
-            border-radius: 8px !important; transition: all 0.2s ease !important; color: {DP_NAVY} !important; 
-            font-weight: 400 !important; border-left: 3px solid transparent !important;
+            background: transparent !important;
+            padding: 6px 12px !important; margin-bottom: 2px !important; border-radius: 8px !important;
+            transition: all 0.2s ease !important; color: {DP_NAVY} !important; font-weight: 400 !important;
+            border-left: 3px solid transparent !important;
         }}
         [data-testid="stSidebar"] div[role="radiogroup"] label:hover {{ background: rgba(0, 196, 167, 0.04) !important; }}
         [data-testid="stSidebar"] div[role="radiogroup"] label[aria-checked="true"],
@@ -48,12 +52,15 @@ def apply_custom_design():
             background: rgba(0, 196, 167, 0.06) !important; border-left: 3px solid {DP_TEAL} !important;
             color: {DP_TEAL} !important; font-weight: 600 !important;
         }}
+
+        /* FIXING RED CIRCLES */
         div[role="radiogroup"] div[data-testid="stMarkdownContainer"] ~ div[aria-checked="true"] div:first-child,
         div[role="radiogroup"] div[data-testid="stMarkdownContainer"] ~ div[data-checked="true"] div:first-child {{
             background-color: {DP_TEAL} !important; border-color: {DP_TEAL} !important;
         }}
         input[type="radio"] {{ accent-color: {DP_TEAL} !important; }}
 
+        /* PROMPT BOXES */
         div[data-baseweb="input"], div[data-baseweb="base-input"], div[data-baseweb="select"] > div {{
             background-color: rgba(255, 255, 255, 0.9) !important; border: 1px solid rgba(0,0,0,0.03) !important;
             border-radius: 20px !important; box-shadow: 0 2px 8px rgba(0,0,0,0.02), 0 1px 2px rgba(0,0,0,0.02) !important;
@@ -62,8 +69,11 @@ def apply_custom_design():
         div[data-baseweb="input"]:focus-within, div[data-baseweb="select"] > div:focus-within {{
             box-shadow: 0 8px 20px rgba(0, 196, 167, 0.1) !important; border: 1px solid rgba(0, 196, 167, 0.4) !important;
         }}
-        .stTextInput input, .stNumberInput input {{ background-color: transparent !important; border: none !important; box-shadow: none !important; padding: 8px !important; }}
+        .stTextInput input, .stNumberInput input {{
+            background-color: transparent !important; border: none !important; box-shadow: none !important; padding: 8px !important;
+        }}
 
+        /* METRICS & BUTTONS */
         [data-testid="stMetric"] {{
             background: rgba(255, 255, 255, 0.6) !important; backdrop-filter: blur(15px);
             border: 1px solid rgba(255, 255, 255, 0.8) !important; padding: 16px !important;
@@ -130,7 +140,8 @@ def sync_from_cloud():
         st.session_state.master_data = md
         
         el = conn.read(worksheet="exception_logs", ttl="0")
-        if 'Country' not in el.columns: el = pd.DataFrame(columns=["Country", "Timestamp", "Agent", "Type", "Duration (Min)", "Notes"])
+        # Updated Exception schema to track exact Date and Start Time for schedule overlay
+        if 'Start Time' not in el.columns: el = pd.DataFrame(columns=["Country", "Date", "Start Time", "Agent", "Type", "Duration (Min)", "Notes"])
         st.session_state.exception_logs = el
 
         sd = conn.read(worksheet="schedule_db", ttl="0")
@@ -144,7 +155,7 @@ def sync_from_cloud():
     except Exception:
         st.session_state.user_db = pd.DataFrame([{"email": "telmo.alves@docplanner.com", "password": "Memes0812", "role": "Admin"}])
         st.session_state.master_data = pd.DataFrame(columns=["Date", "Country", "Channel", "Volume", "SLA", "AHT", "FTE"])
-        st.session_state.exception_logs = pd.DataFrame(columns=["Country", "Timestamp", "Agent", "Type", "Duration (Min)", "Notes"])
+        st.session_state.exception_logs = pd.DataFrame(columns=["Country", "Date", "Start Time", "Agent", "Type", "Duration (Min)", "Notes"])
         st.session_state.schedule_db = pd.DataFrame(columns=["Country", "YearMonth", "Agent", "Time"] + [str(d) for d in range(1, 32)])
         st.session_state.forecast_db = pd.DataFrame(columns=["Date", "Country", "Channel", "Forecast_Volume", "Req_FTE"])
 
@@ -224,7 +235,8 @@ if menu == "Dashboard":
         df_f = df[df['Country'].isin(selected_markets)].copy()
         
         if not df_f.empty:
-            for c in ['Volume', 'SLA', 'AHT', 'FTE']: df_f[c] = pd.to_numeric(df_f[c], errors='coerce').fillna(0)
+            for c in ['Volume', 'SLA', 'AHT', 'FTE']: 
+                df_f[c] = pd.to_numeric(df_f[c], errors='coerce').fillna(0)
             
             tot_v = df_f['Volume'].sum()
             avg_fte = df_f['FTE'].mean()
@@ -272,12 +284,11 @@ elif menu == "Import Data":
                 st.session_state.master_data.drop_duplicates(subset=['Date', 'Country', 'Channel'], keep='last', inplace=True)
                 
                 try:
-                    with st.spinner("Syncing to Cloud Database (This may take a moment for large files)..."):
+                    with st.spinner("Syncing to Cloud Database..."):
                         conn.update(worksheet="master_data", data=st.session_state.master_data)
                     st.success(f"Successfully synchronized {len(new_df):,} rows with Cloud Data Lake.")
                 except Exception as e:
-                    st.error("Google Sheets API timed out! The file is too large for a single cloud push.")
-                    st.warning("Data is saved to your temporary local session. Forecasting will work, but data clears on refresh.")
+                    st.error("Google Sheets API timed out! File too large for single cloud push.")
             else:
                 st.error(f"Upload Failed: Missing columns: {missing_cols}")
 
@@ -300,7 +311,6 @@ elif menu == "Forecasting":
         c1, c2 = st.columns(2)
         if c1.button("🚀 Generate 12-Month Forecast & Distribution"):
             with st.spinner("Analyzing historical patterns... (Optimized Vector Engine)"):
-                # Pre-calculate to bypass slow 365-day iteration
                 hist_agg = valid_df.groupby(['Country', 'Channel'])[['Volume', 'AHT']].mean().reset_index()
                 metrics_dict = hist_agg.set_index(['Country', 'Channel']).to_dict('index')
                 
@@ -357,6 +367,8 @@ elif menu == "Scheduling":
     with tab1:
         st.write("### Agent Schedule View")
         s_db = st.session_state.schedule_db
+        exc_db = st.session_state.exception_logs
+        
         if not s_db.empty and 'Country' in s_db.columns:
             market_db = s_db[s_db['Country'].isin(selected_markets)]
             agents = market_db['Agent'].dropna().unique().tolist()
@@ -365,12 +377,37 @@ elif menu == "Scheduling":
                 c1, c2 = st.columns([1, 3])
                 selected_agent = c1.selectbox("Select Agent", agents)
                 selected_ym = c1.selectbox("Select Month", market_db['YearMonth'].unique())
+                
                 agent_schedule = market_db[(market_db['Agent'] == selected_agent) & (market_db['YearMonth'] == selected_ym)].copy()
                 
                 if not agent_schedule.empty:
                     agent_schedule = agent_schedule.sort_values(by="Time")
                     display_cols = ["Time"] + [str(d) for d in range(1, 32) if str(d) in agent_schedule.columns]
                     display_df = agent_schedule[display_cols].set_index("Time")
+                    
+                    # --- DYNAMIC EXCEPTION OVERLAY ENGINE ---
+                    if not exc_db.empty and 'Date' in exc_db.columns:
+                        agent_exc = exc_db[exc_db['Agent'] == selected_agent]
+                        for _, exc in agent_exc.iterrows():
+                            exc_date_str = str(exc['Date'])
+                            # Check if exception belongs to current viewed month
+                            if exc_date_str.startswith(selected_ym):
+                                exc_day = str(int(exc_date_str.split('-')[2])) # Convert "2026-02-05" -> "5"
+                                start_time = exc['Start Time']
+                                duration = int(exc['Duration (Min)'])
+                                exc_type = f"🔴 {exc['Type']}"
+                                
+                                # Calculate how many 30-min blocks are affected
+                                blocks_affected = math.ceil(duration / 30)
+                                
+                                if start_time in display_df.index and exc_day in display_df.columns:
+                                    start_idx = display_df.index.get_loc(start_time)
+                                    # Override the schedule blocks visually
+                                    for i in range(blocks_affected):
+                                        if start_idx + i < len(display_df):
+                                            target_time = display_df.index[start_idx + i]
+                                            display_df.at[target_time, exc_day] = exc_type
+
                     st.write(f"**Viewing Schedule:** {selected_agent} ({selected_ym})")
                     edited_df = st.data_editor(display_df, use_container_width=True)
                 else: st.warning("No schedule found.")
@@ -378,52 +415,57 @@ elif menu == "Scheduling":
         else: st.info("Schedule database is empty.")
 
     with tab2:
+        st.write("### Option A: Auto-Generate Forecast-Optimized Roster")
+        default_y = datetime.now().year
+        default_m = datetime.now().month
+        f_db = st.session_state.forecast_db.copy()
+        
+        if not f_db.empty:
+            f_db['Date'] = pd.to_datetime(f_db['Date'], errors='coerce')
+            f_db = f_db.dropna(subset=['Date'])
+            if not f_db.empty:
+                min_dt = f_db['Date'].min()
+                max_dt = f_db['Date'].max()
+                default_y = int(min_dt.year)
+                default_m = int(min_dt.month)
+                st.info(f"📅 **Note:** Your active Forecast spans from **{min_dt.strftime('%b %Y')}** to **{max_dt.strftime('%b %Y')}**.")
+
         col1, col2, col3 = st.columns([1,1,2])
-        y_sel = col1.number_input("Year", 2024, 2030, datetime.now().year)
-        m_sel = col2.number_input("Month", 1, 12, datetime.now().month)
+        y_sel = col1.number_input("Year", 2000, 2050, default_y)
+        m_sel = col2.number_input("Month", 1, 12, default_m)
         target_country = col3.selectbox("Assign to Market", COUNTRIES, key="sch_country")
         
-        st.write("### Option A: Auto-Generate Forecast-Optimized Roster")
         st.write("Generates an intelligently bin-packed schedule based on the selected month's exact Erlang-C forecast curve.")
         if st.button("✨ Generate AI Roster"):
-            f_db = st.session_state.forecast_db
             if f_db.empty:
                 st.error("You must generate a 12-Month Forecast first!")
             else:
-                f_db['Date'] = pd.to_datetime(f_db['Date'])
                 f_month = f_db[(f_db['Date'].dt.year == y_sel) & (f_db['Date'].dt.month == m_sel) & (f_db['Country'] == target_country)]
-                
                 if f_month.empty:
-                    st.error("No forecast data exists for this specific month/country. Please re-run Forecasting.")
+                    st.error("No forecast data exists for this specific month/country. Check the active forecast range.")
                 else:
                     with st.spinner("Calculating Interval Curves and Packing Agent Shifts..."):
                         days_in_month = calendar.monthrange(int(y_sel), int(m_sel))[1]
                         times = generate_time_slots()
-                        
-                        # Simulated Bell Curve Contact Center Arrival Pattern
                         weights = [0.5, 0.6, 0.8, 1.0, 1.2, 1.3, 1.2, 1.0, 0.8, 0.7, 0.8, 1.0, 1.1, 1.2, 1.1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]
                         dist_curve = {times[i]: weights[i]/sum(weights) for i in range(len(times))}
                         
-                        # Generate Schedule Matrix
                         schedule_matrix = {d: {t: [] for t in times} for d in range(1, days_in_month+1)}
                         max_agents = 0
                         
                         for d in range(1, days_in_month+1):
                             date_str = f"{y_sel}-{str(m_sel).zfill(2)}-{str(d).zfill(2)}"
                             day_fcst = f_month[f_month['Date'] == date_str]
-                            
                             for t in times:
                                 agents_needed = []
                                 for _, row in day_fcst.iterrows():
                                     ch = row['Channel']
                                     int_vol = row['Forecast_Volume'] * dist_curve[t]
-                                    req = get_required_fte(int_vol, 300, 0.80) # Simplified AHT lookup for speed
+                                    req = get_required_fte(int_vol, 300, 0.80)
                                     agents_needed.extend([ch] * req)
-                                
                                 schedule_matrix[d][t] = agents_needed
                                 if len(agents_needed) > max_agents: max_agents = len(agents_needed)
                         
-                        # Construct standard DataFrame
                         if max_agents == 0: max_agents = 10
                         rows = []
                         for i in range(1, max_agents + 1):
@@ -456,15 +498,21 @@ elif menu == "Scheduling":
 elif menu == "Exception Management":
     render_header("Live Exceptions")
     with st.form("exc_log", clear_on_submit=True):
+        c1, c2 = st.columns(2)
+        exc_date = c1.date_input("Exception Date")
+        exc_time = c2.selectbox("Start Time", generate_time_slots())
+        
         ct_in = st.selectbox("Market Selection", COUNTRIES)
-        agt_in = st.text_input("Staff Name")
+        agt_in = st.text_input("Staff Name (Must exactly match Schedule Roster)")
         t_in = st.selectbox("Reason Code", ["Sickness", "Late", "Technical", "Meeting"])
-        d_in = st.number_input("Duration (Minutes)", value=30, min_value=1)
+        d_in = st.number_input("Duration (Minutes)", value=30, min_value=1, step=30)
+        
         if st.form_submit_button("Log Exception"):
-            new_e = pd.DataFrame([[ct_in, datetime.now().strftime("%Y-%m-%d %H:%M"), agt_in, t_in, d_in, ""]], columns=st.session_state.exception_logs.columns)
+            new_e = pd.DataFrame([[ct_in, exc_date.strftime("%Y-%m-%d"), exc_time, agt_in, t_in, d_in, ""]], columns=st.session_state.exception_logs.columns)
             st.session_state.exception_logs = pd.concat([st.session_state.exception_logs, new_e], ignore_index=True)
-            conn.update(worksheet="exception_logs", data=st.session_state.exception_logs)
-            st.success("Exception logged to Cloud.")
+            try: conn.update(worksheet="exception_logs", data=st.session_state.exception_logs)
+            except: pass
+            st.success("Exception logged and mapped to Roster.")
     st.dataframe(st.session_state.exception_logs, use_container_width=True)
 
 elif menu == "Capacity Planner (Erlang)":
