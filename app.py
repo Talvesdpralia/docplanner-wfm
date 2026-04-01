@@ -140,7 +140,6 @@ def sync_from_cloud():
         st.session_state.master_data = md
         
         el = conn.read(worksheet="exception_logs", ttl="0")
-        # Updated Exception schema to track exact Date and Start Time for schedule overlay
         if 'Start Time' not in el.columns: el = pd.DataFrame(columns=["Country", "Date", "Start Time", "Agent", "Type", "Duration (Min)", "Notes"])
         st.session_state.exception_logs = el
 
@@ -235,8 +234,7 @@ if menu == "Dashboard":
         df_f = df[df['Country'].isin(selected_markets)].copy()
         
         if not df_f.empty:
-            for c in ['Volume', 'SLA', 'AHT', 'FTE']: 
-                df_f[c] = pd.to_numeric(df_f[c], errors='coerce').fillna(0)
+            for c in ['Volume', 'SLA', 'AHT', 'FTE']: df_f[c] = pd.to_numeric(df_f[c], errors='coerce').fillna(0)
             
             tot_v = df_f['Volume'].sum()
             avg_fte = df_f['FTE'].mean()
@@ -383,26 +381,27 @@ elif menu == "Scheduling":
                 if not agent_schedule.empty:
                     agent_schedule = agent_schedule.sort_values(by="Time")
                     display_cols = ["Time"] + [str(d) for d in range(1, 32) if str(d) in agent_schedule.columns]
-                    display_df = agent_schedule[display_cols].set_index("Time")
+                    
+                    # --- CRITICAL BUG FIX: DROP DUPLICATES SO INDEX IS ALWAYS UNIQUE ---
+                    display_df = agent_schedule[display_cols].drop_duplicates(subset=['Time'], keep='last').set_index("Time")
                     
                     # --- DYNAMIC EXCEPTION OVERLAY ENGINE ---
                     if not exc_db.empty and 'Date' in exc_db.columns:
                         agent_exc = exc_db[exc_db['Agent'] == selected_agent]
                         for _, exc in agent_exc.iterrows():
                             exc_date_str = str(exc['Date'])
-                            # Check if exception belongs to current viewed month
                             if exc_date_str.startswith(selected_ym):
-                                exc_day = str(int(exc_date_str.split('-')[2])) # Convert "2026-02-05" -> "5"
+                                exc_day = str(int(exc_date_str.split('-')[2])) 
                                 start_time = exc['Start Time']
                                 duration = int(exc['Duration (Min)'])
                                 exc_type = f"🔴 {exc['Type']}"
                                 
-                                # Calculate how many 30-min blocks are affected
                                 blocks_affected = math.ceil(duration / 30)
                                 
                                 if start_time in display_df.index and exc_day in display_df.columns:
+                                    # Safe integer lookup thanks to deduplication
                                     start_idx = display_df.index.get_loc(start_time)
-                                    # Override the schedule blocks visually
+                                    
                                     for i in range(blocks_affected):
                                         if start_idx + i < len(display_df):
                                             target_time = display_df.index[start_idx + i]
@@ -488,7 +487,11 @@ elif menu == "Scheduling":
             df_up = pd.read_csv(up_sch)
             df_up['Country'] = target_country
             df_up['YearMonth'] = f"{y_sel}-{str(m_sel).zfill(2)}"
+            
             st.session_state.schedule_db = pd.concat([st.session_state.schedule_db, df_up], ignore_index=True)
+            # --- CRITICAL BUG FIX: DEDUPLICATE THE DATABASE ON UPLOAD ---
+            st.session_state.schedule_db.drop_duplicates(subset=['Country', 'YearMonth', 'Agent', 'Time'], keep='last', inplace=True)
+            
             try:
                 conn.update(worksheet="schedule_db", data=st.session_state.schedule_db)
                 st.success(f"Schedule for {target_country} successfully uploaded.")
@@ -550,6 +553,8 @@ elif menu == "Admin Panel":
                 st.session_state.user_db = pd.concat([st.session_state.user_db, new_u], ignore_index=True)
                 conn.update(worksheet="user_db", data=st.session_state.user_db)
                 st.success(f"Access granted to {n_e}.")
+            else:
+                st.error("Email and Password cannot be empty.")
     st.dataframe(st.session_state.user_db[['email', 'role']], use_container_width=True)
 
 elif menu == "System Status":
