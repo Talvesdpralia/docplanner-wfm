@@ -423,13 +423,19 @@ elif menu == "Forecasting":
                         # --- START ROSTER FETCH LOGIC ---
                         team_roster_df = fetch_google_roster()
                         country_names = []
-                        if not team_roster_df.empty:
-                            # Fuzzy matching for column names to ensure resilience
+                        if team_roster_df.empty:
+                            st.warning("⚠️ Could not load Google Sheet. Ensure it is set to 'Anyone with the link can view'. Proceeding with placeholder names.")
+                        else:
+                            # Fuzzy matching for column names
                             c_col = next((c for c in team_roster_df.columns if 'country' in c.lower()), None)
                             n_col = next((c for c in team_roster_df.columns if 'name' in c.lower() or 'agent' in c.lower()), None)
                             
                             if c_col and n_col:
                                 country_names = team_roster_df[team_roster_df[c_col].str.contains(target_country, case=False, na=False)][n_col].dropna().unique().tolist()
+                                if not country_names:
+                                    st.warning(f"⚠️ Google Sheet loaded, but found 0 matching agents for '{target_country}'. Proceeding with placeholder names.")
+                            else:
+                                st.warning("⚠️ Google Sheet loaded, but couldn't find columns named 'Country' and 'Name'. Proceeding with placeholder names.")
                         # --- END ROSTER FETCH LOGIC ---
                         
                         country_df = df[df['Country'] == target_country].copy()
@@ -494,7 +500,7 @@ elif menu == "Forecasting":
                                 if not s_df.empty:
                                     s_df.to_sql('schedule_db', con=conn.engine, if_exists='append', index=False)
                                 
-                                st.success(f"Generated {len(f_df)} forecast intervals and {len(s_df)} base schedule rows using Real Agent Names for {target_country}.")
+                                st.success(f"Generated {len(f_df)} forecast intervals and {len(s_df)} base schedule rows for {target_country}.")
                                 sync_from_cloud()
                             except Exception as e:
                                 error_msg = str(e)
@@ -536,12 +542,17 @@ elif menu == "Scheduling":
     e_db = st.session_state.exception_logs
     
     if not s_db.empty and 'Country' in s_db.columns:
-        market_db = s_db[s_db['Country'].isin(selected_markets)].copy()
+        # Added dedicated Country Dropdown for the Scheduling Module
+        available_countries = sorted(s_db['Country'].unique())
+        
+        c1, c2, c3 = st.columns([1, 1, 2])
+        view_country = c1.selectbox("Select Market", available_countries)
+        
+        market_db = s_db[s_db['Country'] == view_country].copy()
         
         if not market_db.empty and 'Date' in market_db.columns:
             available_dates = sorted(market_db['Date'].unique())
-            c1, c2 = st.columns([1, 3])
-            selected_date = c1.selectbox("Select Date to View", available_dates)
+            selected_date = c2.selectbox("Select Date to View", available_dates)
             
             day_sch = market_db[market_db['Date'] == selected_date].copy()
             
