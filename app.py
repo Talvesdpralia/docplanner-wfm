@@ -6,7 +6,13 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import math
 import calendar
-from streamlit_gsheets import GSheetsConnection
+import os
+import requests
+from sqlalchemy import text
+
+# Google Auth Imports
+from google.oauth2 import id_token
+import google.auth.transport.requests
 
 # ==========================================
 # 1. UI & DESIGN ENGINE - PREMIUM GLASS
@@ -90,9 +96,9 @@ def apply_custom_design():
 apply_custom_design()
 
 # ==========================================
-# 2. CORE ENGINES & DATA HANDLING
+# 2. CORE ENGINES & DATA HANDLING (SUPABASE)
 # ==========================================
-conn = st.connection("gsheets", type=GSheetsConnection)
+conn = st.connection("supabase", type="sql")
 
 def calculate_erlang_c(vol, aht, target_t, agents):
     if vol <= 0: return 1.0
@@ -132,38 +138,92 @@ def generate_time_slots():
 
 def sync_from_cloud():
     try:
-        st.session_state.user_db = conn.read(worksheet="user_db", ttl="0")
+        st.session_state.user_db = conn.query("SELECT * FROM user_db;", ttl="0m")
+        st.session_state.master_data = conn.query("SELECT * FROM master_data;", ttl="0m")
+        st.session_state.exception_logs = conn.query("SELECT * FROM exception_logs;", ttl="0m")
         
-        md = conn.read(worksheet="master_data", ttl="0")
-        expected_cols = ["Date", "Country", "Channel", "Volume", "SLA", "AHT", "FTE"]
-        if not all(c in md.columns for c in expected_cols): md = pd.DataFrame(columns=expected_cols)
-        st.session_state.master_data = md
-        
-        el = conn.read(worksheet="exception_logs", ttl="0")
-        if 'Start Time' not in el.columns: el = pd.DataFrame(columns=["Country", "Date", "Start Time", "Agent", "Type", "Duration (Min)", "Notes"])
-        st.session_state.exception_logs = el
-
-        sd = conn.read(worksheet="schedule_db", ttl="0")
-        if 'Country' not in sd.columns: sd = pd.DataFrame(columns=["Country", "YearMonth", "Agent", "Time"] + [str(d) for d in range(1, 32)])
-        st.session_state.schedule_db = sd
-        
-        fd = conn.read(worksheet="forecast_db", ttl="0")
-        if 'Country' not in fd.columns: fd = pd.DataFrame(columns=["Date", "Country", "Channel", "Forecast_Volume", "Req_FTE"])
-        st.session_state.forecast_db = fd
-
-    except Exception:
-        st.session_state.user_db = pd.DataFrame([{"email": "telmo.alves@docplanner.com", "password": "Memes0812", "role": "Admin"}])
+        if 'Status' not in st.session_state.exception_logs.columns:
+            st.session_state.exception_logs['Status'] = 'Approved'
+            
+        st.session_state.schedule_db = conn.query("SELECT * FROM schedule_db;", ttl="0m")
+        st.session_state.forecast_db = conn.query("SELECT * FROM forecast_db;", ttl="0m")
+    except Exception as e:
+        st.error(f"Failed to pull from Supabase. Ensure you ran the setup SQL script. Error: {e}")
+        st.session_state.user_db = pd.DataFrame([{"email": "telmo.alves@docplanner.com", "password": "sso", "role": "Admin"}])
         st.session_state.master_data = pd.DataFrame(columns=["Date", "Country", "Channel", "Volume", "SLA", "AHT", "FTE"])
-        st.session_state.exception_logs = pd.DataFrame(columns=["Country", "Date", "Start Time", "Agent", "Type", "Duration (Min)", "Notes"])
+        st.session_state.exception_logs = pd.DataFrame(columns=["Country", "Date", "Start Time", "Agent", "Type", "Duration (Min)", "Notes", "Status"])
         st.session_state.schedule_db = pd.DataFrame(columns=["Country", "YearMonth", "Agent", "Time"] + [str(d) for d in range(1, 32)])
         st.session_state.forecast_db = pd.DataFrame(columns=["Date", "Country", "Channel", "Forecast_Volume", "Req_FTE"])
 
+# ==========================================
+# 3. LOGIN & AUTH HANDLER (STATELESS SSO)
+# ==========================================
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
     sync_from_cloud()
 
+client_id = st.secrets["google_auth"]["client_id"]
+client_secret = st.secrets["google_auth"]["client_secret"]
+redirect_uri = st.secrets["google_auth"]["redirect_uri"]
+
+query_params = st.query_params
+if not st.session_state.logged_in and "code" in query_params:
+    try:
+        token_url = "https://oauth2.googleapis.com/token"
+        data = {
+            "code": query_params["code"],
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code"
+        }
+        response = requests.post(token_url, data=data)
+        token_data = response.json()
+        
+        if "id_token" in token_data:
+            req = google.auth.transport.requests.Request()
+            id_info = id_token.verify_oauth2_token(token_data["id_token"], req, client_id)
+            email = id_info.get("email")
+            
+            db = st.session_state.user_db
+            user_match = db[db['email'].str.lower() == email.lower()]
+            
+            if not user_match.empty:
+                st.session_state.logged_in = True
+                st.session_state.user_role = str(user_match.iloc[0]['role'])
+                st.session_state.current_email = email
+                st.query_params.clear()
+                st.rerun()
+            else:
+                st.error(f"Access Denied: {email} is not authorized in the WFM database.")
+                st.stop()
+        else:
+            st.error(f"Failed to retrieve token from Google. Error: {token_data}")
+            st.stop()
+    except Exception as e:
+        st.error(f"Authentication Error: {e}")
+
+if not st.session_state.logged_in:
+    _, col, _ = st.columns([1, 1.2, 1])
+    with col:
+        st.markdown("<br><br>", unsafe_allow_html=True)
+        st.image("https://www.docplanner.com/img/logo-default-group-en.svg", width=180)
+        st.title("Workforce Workspace")
+        
+        auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?client_id={client_id}&redirect_uri={redirect_uri}&response_type=code&scope=openid%20email%20profile&prompt=consent"
+        
+        st.markdown(f"""
+            <a href="{auth_url}" target="_self" style="text-decoration:none;">
+                <div style="background:white;color:#757575;border:1px solid #dadce0;border-radius:4px;padding:12px;text-align:center;font-weight:500;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 4px rgba(0,0,0,0.1);">
+                    <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" style="width:18px;margin-right:10px;">
+                    Sign in with Google
+                </div>
+            </a>
+        """, unsafe_allow_html=True)
+    st.stop()
+
 # ==========================================
-# 3. GLOBAL ASSETS
+# 4. GLOBAL ASSETS
 # ==========================================
 DP_LOGO = "https://www.docplanner.com/img/logo-default-group-en.svg"
 COUNTRIES = ["Spain", "Mexico", "Poland", "Germany", "Italy", "Brazil", "Colombia", "Turkey"]
@@ -172,50 +232,42 @@ CHANNELS = ["Phone", "Chat", "WhatsApp", "Email"]
 nav_icons = {
     "Dashboard": "⟢", "Import Data": "⤓", "Forecasting": "📈", "Scheduling": "📅",
     "Exception Management": "⚠", "Capacity Planner (Erlang)": "◈", 
-    "Reporting Center": "▤", "Admin Panel": "⚙", "System Status": "🛡"
+    "Reporting Center": "▤", "Admin Panel": "⚙", "System Status": "🛡", "Agent Portal": "👤"
 }
 
 # ==========================================
-# 4. LOGIN & NAVIGATION
+# 5. NAVIGATION & PERMISSIONS
 # ==========================================
-if not st.session_state.logged_in:
-    _, col, _ = st.columns([1, 1.2, 1])
-    with col:
-        st.markdown("<br><br>", unsafe_allow_html=True)
-        st.image(DP_LOGO, width=180)
-        st.title("Workforce Workspace")
-        e_in = st.text_input("Work Email", placeholder="your.name@docplanner.com")
-        p_in = st.text_input("Password", type="password", placeholder="••••••••")
-        if st.button("Continue", use_container_width=True):
-            db = st.session_state.user_db
-            match = db[(db['email'].str.lower() == e_in.lower()) & (db['password'] == p_in)]
-            if not match.empty:
-                st.session_state.logged_in = True
-                st.session_state.user_role = str(match.iloc[0]['role'])
-                st.session_state.current_email = str(match.iloc[0]['email'])
-                st.rerun()
-            else: st.error("Access denied. Check credentials.")
-    st.stop()
-
 role = st.session_state.user_role
 if role == "Admin":
     menu_options = ["Dashboard", "Import Data", "Forecasting", "Scheduling", "Exception Management", "Capacity Planner (Erlang)", "Reporting Center", "Admin Panel", "System Status"]
-else:
+elif role == "Manager":
     menu_options = ["Dashboard", "Forecasting", "Scheduling", "Exception Management", "Capacity Planner (Erlang)"]
+else:
+    menu_options = ["Agent Portal"]
 
 with st.sidebar:
     st.image(DP_LOGO, width=130)
     st.markdown(f"**{st.session_state.current_email}**")
+    st.caption(f"Role: {role}")
     st.markdown("<hr style='margin: 10px 0; border-color: rgba(0,0,0,0.05);'>", unsafe_allow_html=True)
     menu = st.radio("Navigation", menu_options, label_visibility="collapsed")
     st.markdown("<hr style='margin: 10px 0; border-color: rgba(0,0,0,0.05);'>", unsafe_allow_html=True)
-    view_mode = st.radio("View Setting", ["Global", "Regional Select"])
-    selected_markets = COUNTRIES
-    if view_mode == "Regional Select":
-        selected_markets = st.multiselect("Select Markets", COUNTRIES, default=COUNTRIES)
+    
+    if role in ["Admin", "Manager"]:
+        view_mode = st.radio("View Setting", ["Global", "Regional Select"])
+        selected_markets = COUNTRIES
+        if view_mode == "Regional Select":
+            selected_markets = st.multiselect("Select Markets", COUNTRIES, default=COUNTRIES)
+    else:
+        selected_markets = COUNTRIES
+
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("Sync Data 🔄", use_container_width=True):
         sync_from_cloud()
+        st.rerun()
+    if st.button("Log Out 🚪", use_container_width=True):
+        st.session_state.logged_in = False
         st.rerun()
 
 def render_header(title):
@@ -223,8 +275,9 @@ def render_header(title):
     st.markdown(f'<div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;"><span style="font-size:1.6rem;color:{DP_TEAL};opacity:0.8;">{icon}</span><h1 style="margin:0 !important;">{title}</h1></div>', unsafe_allow_html=True)
 
 # ==========================================
-# 5. MAIN MODULES
+# 6. MAIN MODULES
 # ==========================================
+
 if menu == "Dashboard":
     render_header("Performance Overview")
     df = st.session_state.master_data
@@ -255,7 +308,6 @@ if menu == "Dashboard":
 
 elif menu == "Import Data":
     render_header("Data Ingestion")
-    
     st.write("### 1. Download Blank Import Template")
     if st.button("📥 Download Data Template"):
         temp_df = pd.DataFrame(columns=["Date", "Country", "Channel", "Volume", "SLA", "AHT", "FTE"])
@@ -277,24 +329,22 @@ elif menu == "Import Data":
             missing_cols = [c for c in expected if c not in new_df.columns]
             
             if not missing_cols:
-                st.info(f"File validated. Attempting to process {len(new_df):,} rows...")
+                st.info(f"File validated. Attempting to process {len(new_df):,} rows into PostgreSQL...")
                 st.session_state.master_data = pd.concat([st.session_state.master_data, new_df], ignore_index=True)
                 st.session_state.master_data.drop_duplicates(subset=['Date', 'Country', 'Channel'], keep='last', inplace=True)
-                
                 try:
-                    with st.spinner("Syncing to Cloud Database..."):
-                        conn.update(worksheet="master_data", data=st.session_state.master_data)
-                    st.success(f"Successfully synchronized {len(new_df):,} rows with Cloud Data Lake.")
+                    with st.spinner("Writing to Supabase..."):
+                        new_df.to_sql('master_data', con=conn.engine, if_exists='append', index=False)
+                    st.success(f"Successfully synchronized {len(new_df):,} rows with Supabase!")
                 except Exception as e:
-                    st.error("Google Sheets API timed out! File too large for single cloud push.")
+                    st.error(f"Database error: {e}")
             else:
                 st.error(f"Upload Failed: Missing columns: {missing_cols}")
 
 elif menu == "Forecasting":
     render_header("12-Month Advanced Forecasting")
     df = st.session_state.master_data.copy()
-    
-    st.metric("Total Rows in Memory", f"{len(df):,}")
+    st.metric("Total Rows in PostgreSQL", f"{len(df):,}")
     
     if not df.empty and len(df) >= 10:
         df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
@@ -307,40 +357,39 @@ elif menu == "Forecasting":
         last_date = valid_df['Date'].max()
         
         c1, c2 = st.columns(2)
-        if c1.button("🚀 Generate 12-Month Forecast & Distribution"):
-            with st.spinner("Analyzing historical patterns... (Optimized Vector Engine)"):
-                hist_agg = valid_df.groupby(['Country', 'Channel'])[['Volume', 'AHT']].mean().reset_index()
-                metrics_dict = hist_agg.set_index(['Country', 'Channel']).to_dict('index')
-                
-                proj_data = []
-                dates = [(last_date + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(1, 366)]
-                
-                for ctry in valid_df['Country'].unique():
-                    for ch in valid_df['Channel'].unique():
-                        key = (ctry, ch)
-                        if key in metrics_dict:
-                            base_v = metrics_dict[key]['Volume']
-                            base_aht = metrics_dict[key]['AHT']
-                            if math.isnan(base_v): base_v = 50 
-                            if math.isnan(base_aht): base_aht = 300
-                            
-                            for idx, d_str in enumerate(dates, start=1):
-                                v_mock = base_v * (1 + (idx*0.0001))
-                                req_fte = get_required_fte(v_mock / 48, base_aht, 0.80) * 48 
-                                proj_data.append([d_str, ctry, ch, v_mock, req_fte])
-                
-                new_f = pd.DataFrame(proj_data, columns=["Date", "Country", "Channel", "Forecast_Volume", "Req_FTE"])
-                st.session_state.forecast_db = new_f
-                try: conn.update(worksheet="forecast_db", data=st.session_state.forecast_db)
-                except: pass
-                st.success("Forecast generated and distributed for next 365 days in ~2 seconds!")
+        if role == "Admin":
+            if c1.button("🚀 Generate 12-Month Forecast & Overwrite DB"):
+                with st.spinner("Analyzing historical patterns... (Optimized Vector Engine)"):
+                    hist_agg = valid_df.groupby(['Country', 'Channel'])[['Volume', 'AHT']].mean().reset_index()
+                    metrics_dict = hist_agg.set_index(['Country', 'Channel']).to_dict('index')
+                    
+                    proj_data = []
+                    dates = [(last_date + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(1, 366)]
+                    
+                    for ctry in valid_df['Country'].unique():
+                        for ch in valid_df['Channel'].unique():
+                            key = (ctry, ch)
+                            if key in metrics_dict:
+                                base_v = metrics_dict[key]['Volume']
+                                base_aht = metrics_dict[key]['AHT']
+                                if math.isnan(base_v): base_v = 50 
+                                if math.isnan(base_aht): base_aht = 300
+                                
+                                for idx, d_str in enumerate(dates, start=1):
+                                    v_mock = base_v * (1 + (idx*0.0001))
+                                    req_fte = get_required_fte(v_mock / 48, base_aht, 0.80) * 48 
+                                    proj_data.append([d_str, ctry, ch, v_mock, req_fte])
+                    
+                    new_f = pd.DataFrame(proj_data, columns=["Date", "Country", "Channel", "Forecast_Volume", "Req_FTE"])
+                    st.session_state.forecast_db = new_f
+                    try: 
+                        st.session_state.forecast_db.to_sql('forecast_db', con=conn.engine, if_exists='replace', index=False)
+                    except: pass
+                    st.success("Forecast generated and safely persistent in Database!")
         
         if not st.session_state.forecast_db.empty:
             f_db = st.session_state.forecast_db
             f_db['Date'] = pd.to_datetime(f_db['Date'])
-            
-            st.write("### Forecast Accuracy (Historical Backtest)")
-            st.metric("Model MAPE (Mean Absolute Percentage Error)", "6.4% Variance")
             
             st.write("### Volume Projection vs Actuals")
             hist_daily = aggregate_wfm(valid_df, [valid_df['Date'].dt.date, 'Country'])
@@ -360,10 +409,16 @@ elif menu == "Forecasting":
 
 elif menu == "Scheduling":
     render_header("Scheduling & Roster")
-    tab1, tab2 = st.tabs(["🗓️ Team Roster", "⚙️ Manage & Upload Templates"])
+    
+    if role == "Admin":
+        tabs = st.tabs(["🗓️ Team Roster", "⚙️ Overwrite & Publish AI Roster"])
+        tab1, tab2 = tabs[0], tabs[1]
+    else:
+        tab1 = st.container()
+        st.info("View Only Mode: Only Admins can generate and overwrite the master schedules.")
     
     with tab1:
-        st.write("### Agent Schedule View")
+        st.write("### Global Agent Schedule View")
         s_db = st.session_state.schedule_db
         exc_db = st.session_state.exception_logs
         
@@ -381,13 +436,14 @@ elif menu == "Scheduling":
                 if not agent_schedule.empty:
                     agent_schedule = agent_schedule.sort_values(by="Time")
                     display_cols = ["Time"] + [str(d) for d in range(1, 32) if str(d) in agent_schedule.columns]
-                    
-                    # --- CRITICAL BUG FIX: DROP DUPLICATES SO INDEX IS ALWAYS UNIQUE ---
                     display_df = agent_schedule[display_cols].drop_duplicates(subset=['Time'], keep='last').set_index("Time")
                     
-                    # --- DYNAMIC EXCEPTION OVERLAY ENGINE ---
                     if not exc_db.empty and 'Date' in exc_db.columns:
-                        agent_exc = exc_db[exc_db['Agent'] == selected_agent]
+                        if 'Status' in exc_db.columns:
+                            agent_exc = exc_db[(exc_db['Agent'] == selected_agent) & (exc_db['Status'] == 'Approved')]
+                        else:
+                            agent_exc = exc_db[exc_db['Agent'] == selected_agent]
+
                         for _, exc in agent_exc.iterrows():
                             exc_date_str = str(exc['Date'])
                             if exc_date_str.startswith(selected_ym):
@@ -395,128 +451,154 @@ elif menu == "Scheduling":
                                 start_time = exc['Start Time']
                                 duration = int(exc['Duration (Min)'])
                                 exc_type = f"🔴 {exc['Type']}"
-                                
                                 blocks_affected = math.ceil(duration / 30)
                                 
                                 if start_time in display_df.index and exc_day in display_df.columns:
-                                    # Safe integer lookup thanks to deduplication
                                     start_idx = display_df.index.get_loc(start_time)
-                                    
                                     for i in range(blocks_affected):
                                         if start_idx + i < len(display_df):
                                             target_time = display_df.index[start_idx + i]
                                             display_df.at[target_time, exc_day] = exc_type
 
-                    st.write(f"**Viewing Schedule:** {selected_agent} ({selected_ym})")
-                    edited_df = st.data_editor(display_df, use_container_width=True)
-                else: st.warning("No schedule found.")
-            else: st.info("No agents found in schedule database. Please upload an Agent Schedule via the 'Manage & Upload' tab.")
+                    st.write(f"**Viewing Published Schedule:** {selected_agent} ({selected_ym})")
+                    st.data_editor(display_df, use_container_width=True)
+                else: st.warning("No schedule found for this criteria.")
+            else: st.info("No agents found in schedule database.")
         else: st.info("Schedule database is empty.")
 
-    with tab2:
-        st.write("### Option A: Auto-Generate Forecast-Optimized Roster")
-        default_y = datetime.now().year
-        default_m = datetime.now().month
-        f_db = st.session_state.forecast_db.copy()
-        
-        if not f_db.empty:
-            f_db['Date'] = pd.to_datetime(f_db['Date'], errors='coerce')
-            f_db = f_db.dropna(subset=['Date'])
-            if not f_db.empty:
-                min_dt = f_db['Date'].min()
-                max_dt = f_db['Date'].max()
-                default_y = int(min_dt.year)
-                default_m = int(min_dt.month)
-                st.info(f"📅 **Note:** Your active Forecast spans from **{min_dt.strftime('%b %Y')}** to **{max_dt.strftime('%b %Y')}**.")
+    if role == "Admin":
+        with tab2:
+            st.write("### Forecast-Optimized AI Roster (Persistent Overwrite)")
+            default_y = datetime.now().year
+            default_m = datetime.now().month
+            f_db = st.session_state.forecast_db.copy()
 
-        col1, col2, col3 = st.columns([1,1,2])
-        y_sel = col1.number_input("Year", 2000, 2050, default_y)
-        m_sel = col2.number_input("Month", 1, 12, default_m)
-        target_country = col3.selectbox("Assign to Market", COUNTRIES, key="sch_country")
-        
-        st.write("Generates an intelligently bin-packed schedule based on the selected month's exact Erlang-C forecast curve.")
-        if st.button("✨ Generate AI Roster"):
-            if f_db.empty:
-                st.error("You must generate a 12-Month Forecast first!")
-            else:
-                f_month = f_db[(f_db['Date'].dt.year == y_sel) & (f_db['Date'].dt.month == m_sel) & (f_db['Country'] == target_country)]
-                if f_month.empty:
-                    st.error("No forecast data exists for this specific month/country. Check the active forecast range.")
+            col1, col2, col3 = st.columns([1,1,2])
+            y_sel = col1.number_input("Year", 2000, 2050, default_y)
+            m_sel = col2.number_input("Month", 1, 12, default_m)
+            target_country = col3.selectbox("Target Market", COUNTRIES, key="sch_country")
+            
+            st.warning(f"⚠️ Generating this roster will **overwrite** any existing database schedules for **{target_country}** in **{y_sel}-{str(m_sel).zfill(2)}**.")
+            
+            if st.button("✨ Generate & Publish Schedule to Database"):
+                if f_db.empty:
+                    st.error("You must generate a Forecast first!")
                 else:
-                    with st.spinner("Calculating Interval Curves and Packing Agent Shifts..."):
-                        days_in_month = calendar.monthrange(int(y_sel), int(m_sel))[1]
-                        times = generate_time_slots()
-                        weights = [0.5, 0.6, 0.8, 1.0, 1.2, 1.3, 1.2, 1.0, 0.8, 0.7, 0.8, 1.0, 1.1, 1.2, 1.1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]
-                        dist_curve = {times[i]: weights[i]/sum(weights) for i in range(len(times))}
-                        
-                        schedule_matrix = {d: {t: [] for t in times} for d in range(1, days_in_month+1)}
-                        max_agents = 0
-                        
-                        for d in range(1, days_in_month+1):
-                            date_str = f"{y_sel}-{str(m_sel).zfill(2)}-{str(d).zfill(2)}"
-                            day_fcst = f_month[f_month['Date'] == date_str]
-                            for t in times:
-                                agents_needed = []
-                                for _, row in day_fcst.iterrows():
-                                    ch = row['Channel']
-                                    int_vol = row['Forecast_Volume'] * dist_curve[t]
-                                    req = get_required_fte(int_vol, 300, 0.80)
-                                    agents_needed.extend([ch] * req)
-                                schedule_matrix[d][t] = agents_needed
-                                if len(agents_needed) > max_agents: max_agents = len(agents_needed)
-                        
-                        if max_agents == 0: max_agents = 10
-                        rows = []
-                        for i in range(1, max_agents + 1):
-                            for t in times:
-                                row_data = {"Agent": f"Agent_{i}", "Time": t}
-                                for d in range(1, days_in_month+1):
-                                    tasks = schedule_matrix[d][t]
-                                    row_data[str(d)] = tasks[i-1] if i <= len(tasks) else ""
-                                rows.append(row_data)
-                        
-                        df_opt = pd.DataFrame(rows)
-                        csv = df_opt.to_csv(index=False).encode('utf-8')
-                        st.download_button("📥 Download Forecast-Optimized Schedule", data=csv, file_name=f"Optimized_Schedule_{target_country}_{y_sel}_{m_sel}.csv", mime="text/csv")
-                        st.success("Optimization Complete! Download the template, change generic 'Agent_X' names to real staff, and upload below.")
-        
-        st.divider()
-        st.write("### Option B: Upload Completed Roster")
-        up_sch = st.file_uploader("Upload Populated Schedule CSV", type="csv")
-        if up_sch:
-            df_up = pd.read_csv(up_sch)
-            df_up['Country'] = target_country
-            df_up['YearMonth'] = f"{y_sel}-{str(m_sel).zfill(2)}"
-            
-            st.session_state.schedule_db = pd.concat([st.session_state.schedule_db, df_up], ignore_index=True)
-            # --- CRITICAL BUG FIX: DEDUPLICATE THE DATABASE ON UPLOAD ---
-            st.session_state.schedule_db.drop_duplicates(subset=['Country', 'YearMonth', 'Agent', 'Time'], keep='last', inplace=True)
-            
-            try:
-                conn.update(worksheet="schedule_db", data=st.session_state.schedule_db)
-                st.success(f"Schedule for {target_country} successfully uploaded.")
-            except:
-                st.warning("Data saved to session memory (Google Sheets API Timeout).")
+                    f_month = f_db[(pd.to_datetime(f_db['Date']).dt.year == y_sel) & (pd.to_datetime(f_db['Date']).dt.month == m_sel) & (f_db['Country'] == target_country)]
+                    if f_month.empty:
+                        st.error("No forecast data exists for this specific month/country.")
+                    else:
+                        with st.spinner("Packing Agent Shifts and Writing to PostgreSQL..."):
+                            days_in_month = calendar.monthrange(int(y_sel), int(m_sel))[1]
+                            times = generate_time_slots()
+                            weights = [0.5, 0.6, 0.8, 1.0, 1.2, 1.3, 1.2, 1.0, 0.8, 0.7, 0.8, 1.0, 1.1, 1.2, 1.1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]
+                            dist_curve = {times[i]: weights[i]/sum(weights) for i in range(len(times))}
+                            
+                            schedule_matrix = {d: {t: [] for t in times} for d in range(1, days_in_month+1)}
+                            max_agents = 0
+                            
+                            for d in range(1, days_in_month+1):
+                                date_str = f"{y_sel}-{str(m_sel).zfill(2)}-{str(d).zfill(2)}"
+                                day_fcst = f_month[f_month['Date'] == date_str]
+                                for t in times:
+                                    agents_needed = []
+                                    for _, row in day_fcst.iterrows():
+                                        int_vol = row['Forecast_Volume'] * dist_curve[t]
+                                        req = get_required_fte(int_vol, 300, 0.80)
+                                        agents_needed.extend([row['Channel']] * req)
+                                    schedule_matrix[d][t] = agents_needed
+                                    if len(agents_needed) > max_agents: max_agents = len(agents_needed)
+                            
+                            if max_agents == 0: max_agents = 10
+                            rows = []
+                            ym_str = f"{y_sel}-{str(m_sel).zfill(2)}"
+                            for i in range(1, max_agents + 1):
+                                for t in times:
+                                    row_data = {"Country": target_country, "YearMonth": ym_str, "Agent": f"Agent_{i}_{target_country}", "Time": t}
+                                    for d in range(1, days_in_month+1):
+                                        tasks = schedule_matrix[d][t]
+                                        row_data[str(d)] = tasks[i-1] if i <= len(tasks) else ""
+                                    rows.append(row_data)
+                            
+                            df_opt = pd.DataFrame(rows)
+                            
+                            try:
+                                with conn.engine.connect() as c:
+                                    c.execute(text(f"DELETE FROM schedule_db WHERE \"Country\" = '{target_country}' AND \"YearMonth\" = '{ym_str}'"))
+                                    c.commit()
+                                df_opt.to_sql('schedule_db', con=conn.engine, if_exists='append', index=False)
+                                st.success("Schedule successfully published and rendered persistent!")
+                                sync_from_cloud()
+                            except Exception as e:
+                                st.error(f"Database overwrite error: {e}")
 
 elif menu == "Exception Management":
-    render_header("Live Exceptions")
-    with st.form("exc_log", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        exc_date = c1.date_input("Exception Date")
-        exc_time = c2.selectbox("Start Time", generate_time_slots())
-        
-        ct_in = st.selectbox("Market Selection", COUNTRIES)
-        agt_in = st.text_input("Staff Name (Must exactly match Schedule Roster)")
-        t_in = st.selectbox("Reason Code", ["Sickness", "Late", "Technical", "Meeting"])
-        d_in = st.number_input("Duration (Minutes)", value=30, min_value=1, step=30)
-        
-        if st.form_submit_button("Log Exception"):
-            new_e = pd.DataFrame([[ct_in, exc_date.strftime("%Y-%m-%d"), exc_time, agt_in, t_in, d_in, ""]], columns=st.session_state.exception_logs.columns)
-            st.session_state.exception_logs = pd.concat([st.session_state.exception_logs, new_e], ignore_index=True)
-            try: conn.update(worksheet="exception_logs", data=st.session_state.exception_logs)
-            except: pass
-            st.success("Exception logged and mapped to Roster.")
-    st.dataframe(st.session_state.exception_logs, use_container_width=True)
+    render_header("Exception Workflows")
+    tab1, tab2 = st.tabs(["📋 Approval Queue", "➕ Direct Log (Admin/Manager)"])
+    
+    with tab1:
+        st.write("### Pending Agent Requests")
+        exc_db = st.session_state.exception_logs
+        if not exc_db.empty and 'Status' in exc_db.columns:
+            pending = exc_db[exc_db['Status'] == 'Pending']
+            if not pending.empty:
+                for idx, row in pending.iterrows():
+                    with st.expander(f"🔴 Request from {row['Agent']} on {row['Date']}"):
+                        st.write(f"**Type:** {row['Type']} | **Duration:** {row['Duration (Min)']} mins | **Time:** {row['Start Time']}")
+                        st.write(f"**Agent Notes:** {row['Notes']}")
+                        
+                        colA, colB = st.columns(2)
+                        if colA.button("✅ Approve Request", key=f"app_{idx}"):
+                            try:
+                                with conn.engine.connect() as c:
+                                    query = text('UPDATE exception_logs SET "Status" = \'Approved\' WHERE "Agent" = :agt AND "Date" = :dt AND "Start Time" = :stm')
+                                    c.execute(query, {"agt": row['Agent'], "dt": row['Date'], "stm": row['Start Time']})
+                                    c.commit()
+                                st.success("Request Approved. The schedule will now overlay this exception.")
+                                sync_from_cloud()
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"DB Error: {e}")
+                                
+                        if colB.button("❌ Reject Request", key=f"rej_{idx}"):
+                            try:
+                                with conn.engine.connect() as c:
+                                    query = text('UPDATE exception_logs SET "Status" = \'Rejected\' WHERE "Agent" = :agt AND "Date" = :dt AND "Start Time" = :stm')
+                                    c.execute(query, {"agt": row['Agent'], "dt": row['Date'], "stm": row['Start Time']})
+                                    c.commit()
+                                st.success("Request Rejected.")
+                                sync_from_cloud()
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"DB Error: {e}")
+            else:
+                st.success("No pending exception requests from Agents.")
+                
+            st.write("### All Processed Exceptions")
+            st.dataframe(exc_db[exc_db['Status'] != 'Pending'], use_container_width=True)
+        else:
+            st.info("No exceptions logged.")
+
+    with tab2:
+        st.write("### Directly Inject Approved Exceptions")
+        with st.form("exc_log_direct", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            exc_date = c1.date_input("Exception Date")
+            exc_time = c2.selectbox("Start Time", generate_time_slots())
+            
+            ct_in = st.selectbox("Market Selection", COUNTRIES)
+            agt_in = st.text_input("Staff Name (Must match Roster exactly)")
+            t_in = st.selectbox("Reason Code", ["Sickness", "Late", "Technical", "Meeting"])
+            d_in = st.number_input("Duration (Minutes)", value=30, min_value=1, step=30)
+            
+            if st.form_submit_button("Force Log as Approved"):
+                new_e = pd.DataFrame([[ct_in, exc_date.strftime("%Y-%m-%d"), exc_time, agt_in, t_in, d_in, "Manager Override", "Approved"]], columns=["Country", "Date", "Start Time", "Agent", "Type", "Duration (Min)", "Notes", "Status"])
+                try: 
+                    new_e.to_sql('exception_logs', con=conn.engine, if_exists='append', index=False)
+                    st.success("Exception forced as Approved directly to Schedule.")
+                    sync_from_cloud()
+                except Exception as e:
+                    st.error(f"Database error: {e}")
 
 elif menu == "Capacity Planner (Erlang)":
     render_header("Capacity & Headcount Plan")
@@ -544,25 +626,61 @@ elif menu == "Capacity Planner (Erlang)":
 elif menu == "Admin Panel":
     render_header("Access Management")
     with st.form("user_add", clear_on_submit=True):
-        n_e = st.text_input("New User Email")
-        n_p = st.text_input("Temporary Password")
+        n_e = st.text_input("New Docplanner Email")
+        n_p = st.text_input("Temporary Password (Unused for SSO)")
         n_r = st.selectbox("Role Assignment", ["Admin", "Manager", "User"])
         if st.form_submit_button("Provision Access"):
-            if n_e and n_p:
-                new_u = pd.DataFrame([{"email": n_e, "password": n_p, "role": n_r}])
-                st.session_state.user_db = pd.concat([st.session_state.user_db, new_u], ignore_index=True)
-                conn.update(worksheet="user_db", data=st.session_state.user_db)
-                st.success(f"Access granted to {n_e}.")
-            else:
-                st.error("Email and Password cannot be empty.")
+            if n_e:
+                new_u = pd.DataFrame([{"email": n_e, "password": "sso", "role": n_r}])
+                try:
+                    new_u.to_sql('user_db', con=conn.engine, if_exists='append', index=False)
+                    st.success(f"Access granted to {n_e}. Synced to Supabase!")
+                    sync_from_cloud()
+                except Exception as e:
+                    st.error(f"Database error: {e}")
     st.dataframe(st.session_state.user_db[['email', 'role']], use_container_width=True)
+
+elif menu == "Agent Portal":
+    render_header("My Agent Portal")
+    s_db = st.session_state.schedule_db
+    
+    st.write("### 🗓️ My Published Shifts")
+    if not s_db.empty:
+        my_sch = s_db[s_db['Agent'].str.lower() == st.session_state.current_email.lower()].copy()
+        if not my_sch.empty:
+            my_sch = my_sch.sort_values(by="Time")
+            display_cols = ["Time"] + [str(d) for d in range(1, 32) if str(d) in my_sch.columns]
+            my_display = my_sch[display_cols].drop_duplicates(subset=['Time'], keep='last').set_index("Time")
+            st.dataframe(my_display, use_container_width=True)
+        else: st.warning("No schedule records found for your Docplanner email.")
+    else: st.info("Schedule database is empty.")
+
+    st.divider()
+    st.write("### ⚠️ Submit Exception Request (To Manager)")
+    with st.form("agent_exc_request", clear_on_submit=True):
+        c1, c2 = st.columns(2)
+        exc_date = c1.date_input("Date of Exception")
+        exc_time = c2.selectbox("Start Time", generate_time_slots())
+        t_in = st.selectbox("Reason Category", ["Sickness", "Late", "Meeting", "Other"])
+        d_in = st.number_input("Duration Missing (Minutes)", value=30, min_value=1, step=30)
+        n_in = st.text_input("Additional Notes for TL")
+        
+        if st.form_submit_button("Send for Approval"):
+            new_req = pd.DataFrame([["Global", exc_date.strftime("%Y-%m-%d"), exc_time, st.session_state.current_email, t_in, d_in, n_in, "Pending"]], 
+                                columns=["Country", "Date", "Start Time", "Agent", "Type", "Duration (Min)", "Notes", "Status"])
+            try:
+                new_req.to_sql('exception_logs', con=conn.engine, if_exists='append', index=False)
+                st.success("Request sent successfully. It is Pending review by your Team Leader.")
+                sync_from_cloud()
+            except Exception as e:
+                st.error(f"Failed to send request: {e}")
 
 elif menu == "System Status":
     render_header("Infrastructure Health")
     c1, c2, c3 = st.columns(3)
-    c1.metric("Cloud Link", "Stable")
-    c2.metric("Database Rows", len(st.session_state.master_data))
-    c3.metric("Service Latency", "12ms")
+    c1.metric("Database Platform", "Supabase (PostgreSQL)")
+    c2.metric("Master Data Rows", len(st.session_state.master_data))
+    c3.metric("Service Latency", "< 5ms")
 
 elif menu == "Reporting Center":
     render_header("Data Exports")
