@@ -8,6 +8,7 @@ import math
 import calendar
 import os
 import requests
+import urllib.parse
 from sqlalchemy import text
 
 # Google Auth Imports
@@ -210,10 +211,12 @@ if not st.session_state.logged_in:
         st.image("https://www.docplanner.com/img/logo-default-group-en.svg", width=180)
         st.title("Workforce Workspace")
         
-        auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?client_id={client_id}&redirect_uri={redirect_uri}&response_type=code&scope=openid%20email%20profile&prompt=consent"
+        # FIX: URL-encode the redirect URI and use target="_top" to bypass iframe security blocks
+        encoded_uri = urllib.parse.quote(redirect_uri, safe='')
+        auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?client_id={client_id}&redirect_uri={encoded_uri}&response_type=code&scope=openid%20email%20profile&prompt=consent"
         
         st.markdown(f"""
-            <a href="{auth_url}" target="_self" style="text-decoration:none;">
+            <a href="{auth_url}" target="_top" style="text-decoration:none;">
                 <div style="background:white;color:#757575;border:1px solid #dadce0;border-radius:4px;padding:12px;text-align:center;font-weight:500;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 4px rgba(0,0,0,0.1);">
                     <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" style="width:18px;margin-right:10px;">
                     Sign in with Google
