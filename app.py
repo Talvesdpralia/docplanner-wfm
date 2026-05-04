@@ -457,8 +457,10 @@ elif menu == "Forecasting":
                     except Exception as e:
                         error_msg = str(e)
                         if "UndefinedColumn" in error_msg:
-                            st.error("🚨 **Schema Mismatch Warning:** One of your Supabase tables is missing a column required by the DataFrame.")
-                            st.error("Please go to the Supabase Table Editor and ensure both **`forecast_db`** and **`schedule_db`** have a column named **`Time`** (type: text).")
+                            st.error("🚨 **Schema Mismatch Warning:** The database is missing a required column.")
+                            # Dynamically split the error message to show exactly what went wrong without giant SQL blocks
+                            clean_error = error_msg.split('LINE 1')[0] if 'LINE 1' in error_msg else error_msg
+                            st.error(f"**Database Output:** `{clean_error}`")
                         else:
                             st.error(f"Database error: {e}")
         
