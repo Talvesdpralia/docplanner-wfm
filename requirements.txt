@@ -1,5 +1,10 @@
 streamlit
 pandas
+numpy
 plotly
-st-gsheets-connection
-gspread
+requests
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+SQLAlchemy
+psycopg2-binary
