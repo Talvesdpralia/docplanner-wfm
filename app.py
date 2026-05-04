@@ -132,6 +132,15 @@ apply_custom_design()
 # ==========================================
 conn = st.connection("supabase", type="sql")
 
+@st.cache_data(ttl=600)
+def fetch_google_roster():
+    # Transforms the viewable Google Sheet URL into a direct CSV download link
+    url = "https://docs.google.com/spreadsheets/d/1trEEVG1Z_7g5ySyG0XzCJ4MYNC4jWN3_GFXX_TJjgdw/export?format=csv&gid=0"
+    try:
+        return pd.read_csv(url)
+    except Exception:
+        return pd.DataFrame()
+
 def calculate_erlang_c(vol, aht, target_t, agents):
     if vol <= 0: return 1.0
     intensity = (vol * aht) / 3600
@@ -399,82 +408,123 @@ elif menu == "Forecasting":
     df = st.session_state.master_data.copy()
     st.metric("Total Rows in PostgreSQL", f"{len(df):,}")
     
-    if not df.empty:
+    if not df.empty and 'Country' in df.columns:
+        available_countries_in_db = sorted(df['Country'].unique())
+        
         c1, c2 = st.columns(2)
         if role == "Admin":
-            if c1.button("🚀 Generate 90-Day Forecast & Overwrite DB"):
-                with st.spinner("Analyzing historical patterns and generating 3-month base roster..."):
-                    df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-                    df['DoW'] = df['Date'].dt.dayofweek
-                    
-                    baseline = df.groupby(['Country', 'Channel', 'DoW', 'Time'])[['Volume', 'AHT']].mean().reset_index()
-                    
-                    start_dt = datetime.now().date() + timedelta(days=1)
-                    end_dt = start_dt + timedelta(days=90)
-                    future_dates = pd.date_range(start_dt, end_dt)
-                    
-                    forecast_rows = []
-                    schedule_rows = []
-                    
-                    for d in future_dates:
-                        dow = d.dayofweek
-                        d_str = d.strftime('%Y-%m-%d')
-                        ym_str = d.strftime('%Y-%m')
-                        day_base = baseline[baseline['DoW'] == dow]
+            with c1:
+                st.write("### Generate Roster by Country")
+                target_country = st.selectbox("Select Country to Generate Forecast & Schedule", available_countries_in_db)
+                
+                if st.button(f"🚀 Generate 90-Day Plan for {target_country}"):
+                    with st.spinner(f"Pulling Live Roster & Generating Schedule for {target_country}..."):
                         
-                        for _, row in day_base.iterrows():
-                            # Erlang Math
-                            vol = row['Volume'] if not math.isnan(row['Volume']) else 50
-                            aht = row['AHT'] if not math.isnan(row['AHT']) else 300
+                        # --- START ROSTER FETCH LOGIC ---
+                        team_roster_df = fetch_google_roster()
+                        country_names = []
+                        if not team_roster_df.empty:
+                            # Fuzzy matching for column names to ensure resilience
+                            c_col = next((c for c in team_roster_df.columns if 'country' in c.lower()), None)
+                            n_col = next((c for c in team_roster_df.columns if 'name' in c.lower() or 'agent' in c.lower()), None)
                             
-                            req_fte = get_required_fte(vol, aht, 0.80)
-                            
-                            forecast_rows.append({
-                                "Date": d_str, "Time": row['Time'], "Country": row['Country'], 
-                                "Channel": row['Channel'], "Forecast_Volume": vol, "Req_FTE": req_fte
-                            })
-                            
-                            # Build base generic agents
-                            for i in range(1, req_fte + 1):
-                                schedule_rows.append({
-                                    "Country": row['Country'], "YearMonth": ym_str, "Date": d_str, "Time": row['Time'],
-                                    "Agent": f"Agent_{str(i).zfill(2)}_{row['Country']}", "Base_Activity": "Phone & Cases"
-                                })
-                    
-                    f_df = pd.DataFrame(forecast_rows)
-                    s_df = pd.DataFrame(schedule_rows)
-                    
-                    try:
-                        with conn.engine.connect() as c:
-                            c.execute(text("DELETE FROM forecast_db"))
-                            c.execute(text("DELETE FROM schedule_db"))
-                            c.commit()
-                        f_df.to_sql('forecast_db', con=conn.engine, if_exists='append', index=False)
-                        s_df.to_sql('schedule_db', con=conn.engine, if_exists='append', index=False)
+                            if c_col and n_col:
+                                country_names = team_roster_df[team_roster_df[c_col].str.contains(target_country, case=False, na=False)][n_col].dropna().unique().tolist()
+                        # --- END ROSTER FETCH LOGIC ---
                         
-                        st.success(f"Generated {len(f_df)} forecast intervals and {len(s_df)} base schedule rows.")
-                        sync_from_cloud()
-                    except Exception as e:
-                        error_msg = str(e)
-                        if "UndefinedColumn" in error_msg:
-                            st.error("🚨 **Schema Mismatch Warning:** The database is missing a required column.")
-                            # Dynamically split the error message to show exactly what went wrong without giant SQL blocks
-                            clean_error = error_msg.split('LINE 1')[0] if 'LINE 1' in error_msg else error_msg
-                            st.error(f"**Database Output:** `{clean_error}`")
+                        country_df = df[df['Country'] == target_country].copy()
+                        
+                        if country_df.empty:
+                            st.warning(f"No historical data found for {target_country}.")
                         else:
-                            st.error(f"Database error: {e}")
+                            country_df['Date'] = pd.to_datetime(country_df['Date'], errors='coerce')
+                            country_df['DoW'] = country_df['Date'].dt.dayofweek
+                            
+                            baseline = country_df.groupby(['Country', 'Channel', 'DoW', 'Time'])[['Volume', 'AHT']].mean().reset_index()
+                            
+                            start_dt = datetime.now().date() + timedelta(days=1)
+                            end_dt = start_dt + timedelta(days=90)
+                            future_dates = pd.date_range(start_dt, end_dt)
+                            
+                            forecast_rows = []
+                            schedule_rows = []
+                            
+                            for d in future_dates:
+                                dow = d.dayofweek
+                                d_str = d.strftime('%Y-%m-%d')
+                                ym_str = d.strftime('%Y-%m')
+                                day_base = baseline[baseline['DoW'] == dow]
+                                
+                                for _, row in day_base.iterrows():
+                                    # Erlang Math
+                                    vol = row['Volume'] if not math.isnan(row['Volume']) else 50
+                                    aht = row['AHT'] if not math.isnan(row['AHT']) else 300
+                                    
+                                    req_fte = get_required_fte(vol, aht, 0.80)
+                                    
+                                    forecast_rows.append({
+                                        "Date": d_str, "Time": row['Time'], "Country": row['Country'], 
+                                        "Channel": row['Channel'], "Forecast_Volume": vol, "Req_FTE": req_fte
+                                    })
+                                    
+                                    # Map Real Names from Google Sheet
+                                    for i in range(1, req_fte + 1):
+                                        if i <= len(country_names):
+                                            agent_name = country_names[i-1] # Grab real name
+                                        else:
+                                            # Overflow protection if requirement exceeds physical headcount
+                                            agent_name = f"Overflow_Agent_{str(i).zfill(2)}_{target_country}"
+                                            
+                                        schedule_rows.append({
+                                            "Country": row['Country'], "YearMonth": ym_str, "Date": d_str, "Time": row['Time'],
+                                            "Agent": agent_name, "Base_Activity": "Phone & Cases"
+                                        })
+                            
+                            f_df = pd.DataFrame(forecast_rows)
+                            s_df = pd.DataFrame(schedule_rows)
+                            
+                            try:
+                                with conn.engine.connect() as c:
+                                    c.execute(text('DELETE FROM forecast_db WHERE "Country" = :ctry'), {"ctry": target_country})
+                                    c.execute(text('DELETE FROM schedule_db WHERE "Country" = :ctry'), {"ctry": target_country})
+                                    c.commit()
+                                
+                                if not f_df.empty:
+                                    f_df.to_sql('forecast_db', con=conn.engine, if_exists='append', index=False)
+                                if not s_df.empty:
+                                    s_df.to_sql('schedule_db', con=conn.engine, if_exists='append', index=False)
+                                
+                                st.success(f"Generated {len(f_df)} forecast intervals and {len(s_df)} base schedule rows using Real Agent Names for {target_country}.")
+                                sync_from_cloud()
+                            except Exception as e:
+                                error_msg = str(e)
+                                if "UndefinedColumn" in error_msg:
+                                    st.error("🚨 **Schema Mismatch Warning:** The database is missing a required column.")
+                                    clean_error = error_msg.split('LINE 1')[0] if 'LINE 1' in error_msg else error_msg
+                                    st.error(f"**Database Output:** `{clean_error}`")
+                                else:
+                                    st.error(f"Database error: {e}")
         
         if not st.session_state.forecast_db.empty:
             f_db = st.session_state.forecast_db
+            
+            st.markdown("<hr style='margin: 20px 0; border-color: rgba(0,0,0,0.05);'>", unsafe_allow_html=True)
             st.write("### Future Volume Projection")
+            
             if 'Date' in f_db.columns and 'Country' in f_db.columns:
-                f_daily = f_db.groupby(['Date', 'Country'])['Forecast_Volume'].sum().reset_index()
-                ctry_plot = selected_markets[0] if selected_markets else COUNTRIES[0]
-                spain_f = f_daily[f_daily['Country']==ctry_plot]
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=spain_f['Date'], y=spain_f['Forecast_Volume'], name=f"Forecast ({ctry_plot})", line=dict(dash='dot')))
-                fig.update_layout(template="plotly_white")
-                st.plotly_chart(fig, use_container_width=True)
+                available_forecast_countries = sorted(f_db['Country'].unique())
+                if available_forecast_countries:
+                    view_country = st.selectbox("View Forecast Graph For:", available_forecast_countries)
+                    
+                    f_daily = f_db.groupby(['Date', 'Country'])['Forecast_Volume'].sum().reset_index()
+                    country_plot_data = f_daily[f_daily['Country'] == view_country]
+                    
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(x=country_plot_data['Date'], y=country_plot_data['Forecast_Volume'], name=f"Forecast ({view_country})", line=dict(dash='dot')))
+                    fig.update_layout(template="plotly_white")
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("No forecast data generated yet.")
     else: st.warning("Requires historical data to generate forecast models.")
 
 elif menu == "Scheduling":
