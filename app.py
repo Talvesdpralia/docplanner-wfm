@@ -455,18 +455,24 @@ elif menu == "Forecasting":
                         st.success(f"Generated {len(f_df)} forecast intervals and {len(s_df)} base schedule rows.")
                         sync_from_cloud()
                     except Exception as e:
-                        st.error(f"Database error: {e}")
+                        error_msg = str(e)
+                        if "UndefinedColumn" in error_msg:
+                            st.error("🚨 **Schema Mismatch Warning:** One of your Supabase tables is missing a column required by the DataFrame.")
+                            st.error("Please go to the Supabase Table Editor and ensure both **`forecast_db`** and **`schedule_db`** have a column named **`Time`** (type: text).")
+                        else:
+                            st.error(f"Database error: {e}")
         
         if not st.session_state.forecast_db.empty:
             f_db = st.session_state.forecast_db
             st.write("### Future Volume Projection")
-            f_daily = f_db.groupby(['Date', 'Country'])['Forecast_Volume'].sum().reset_index()
-            ctry_plot = selected_markets[0] if selected_markets else COUNTRIES[0]
-            spain_f = f_daily[f_daily['Country']==ctry_plot]
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=spain_f['Date'], y=spain_f['Forecast_Volume'], name=f"Forecast ({ctry_plot})", line=dict(dash='dot')))
-            fig.update_layout(template="plotly_white")
-            st.plotly_chart(fig, use_container_width=True)
+            if 'Date' in f_db.columns and 'Country' in f_db.columns:
+                f_daily = f_db.groupby(['Date', 'Country'])['Forecast_Volume'].sum().reset_index()
+                ctry_plot = selected_markets[0] if selected_markets else COUNTRIES[0]
+                spain_f = f_daily[f_daily['Country']==ctry_plot]
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(x=spain_f['Date'], y=spain_f['Forecast_Volume'], name=f"Forecast ({ctry_plot})", line=dict(dash='dot')))
+                fig.update_layout(template="plotly_white")
+                st.plotly_chart(fig, use_container_width=True)
     else: st.warning("Requires historical data to generate forecast models.")
 
 elif menu == "Scheduling":
@@ -504,16 +510,18 @@ elif menu == "Scheduling":
                 final_df = day_sch[['Agent', 'Time', 'Base_Activity']].rename(columns={'Base_Activity': 'Live_Status'})
             
             # Pivot table to make it a calendar
-            pivot_view = final_df.pivot_table(
-                index='Agent',
-                columns='Time',
-                values='Live_Status',
-                aggfunc='first'
-            ).fillna("-")
-            
-            # Sort columns
-            sorted_cols = sorted(pivot_view.columns)
-            st.dataframe(pivot_view[sorted_cols], use_container_width=True)
+            if 'Time' in final_df.columns:
+                pivot_view = final_df.pivot_table(
+                    index='Agent',
+                    columns='Time',
+                    values='Live_Status',
+                    aggfunc='first'
+                ).fillna("-")
+                
+                # Sort columns
+                sorted_cols = sorted(pivot_view.columns)
+                st.dataframe(pivot_view[sorted_cols], use_container_width=True)
+            else: st.info("Time column missing in schedule database.")
         else: st.info("No data for selected market.")
     else: st.info("Schedule database is empty.")
 
@@ -599,28 +607,30 @@ elif menu == "Capacity Planner (Erlang)":
         s_market = s_db[s_db['Country'].isin(selected_markets)]
         
         if view_scale == "Daily Overview":
-            demand = f_market.groupby('Date')['Req_FTE'].max().reset_index()
-            supply = s_market.groupby(['Date', 'Agent']).size().reset_index().groupby('Date').size().reset_index(name='Scheduled_FTE')
-            gap = demand.merge(supply, on='Date', how='outer').fillna(0)
-            gap['Variance'] = gap['Scheduled_FTE'] - gap['Req_FTE']
-            
-            fig = px.bar(gap, x='Date', y='Variance', color=np.where(gap['Variance'] < 0, 'Understaffed', 'Overstaffed'), color_discrete_map={'Understaffed':'#ef4444', 'Overstaffed':'#10b981'})
-            st.plotly_chart(fig, use_container_width=True)
+            if 'Date' in f_market.columns and 'Req_FTE' in f_market.columns:
+                demand = f_market.groupby('Date')['Req_FTE'].max().reset_index()
+                supply = s_market.groupby(['Date', 'Agent']).size().reset_index().groupby('Date').size().reset_index(name='Scheduled_FTE')
+                gap = demand.merge(supply, on='Date', how='outer').fillna(0)
+                gap['Variance'] = gap['Scheduled_FTE'] - gap['Req_FTE']
+                
+                fig = px.bar(gap, x='Date', y='Variance', color=np.where(gap['Variance'] < 0, 'Understaffed', 'Overstaffed'), color_discrete_map={'Understaffed':'#ef4444', 'Overstaffed':'#10b981'})
+                st.plotly_chart(fig, use_container_width=True)
             
         else:
-            dates = sorted(f_market['Date'].unique())
-            if dates:
-                sel_date = st.selectbox("Select Date", dates)
-                demand = f_market[f_market['Date'] == sel_date].groupby('Time')['Req_FTE'].sum().reset_index()
-                supply = s_market[s_market['Date'] == sel_date].groupby('Time')['Agent'].count().reset_index(name='Scheduled_FTE')
-                
-                gap = demand.merge(supply, on='Time', how='outer').fillna(0)
-                gap['Variance'] = gap['Scheduled_FTE'] - gap['Req_FTE']
-                gap = gap.sort_values(by='Time')
-                
-                fig = go.Figure(go.Bar(x=gap['Time'], y=gap['Variance'], marker_color=np.where(gap['Variance'] < 0, '#ef4444', '#10b981')))
-                fig.update_layout(template="plotly_white", title="FTE Variance by 30-Min Interval")
-                st.plotly_chart(fig, use_container_width=True)
+            if 'Date' in f_market.columns:
+                dates = sorted(f_market['Date'].unique())
+                if dates:
+                    sel_date = st.selectbox("Select Date", dates)
+                    demand = f_market[f_market['Date'] == sel_date].groupby('Time')['Req_FTE'].sum().reset_index()
+                    supply = s_market[s_market['Date'] == sel_date].groupby('Time')['Agent'].count().reset_index(name='Scheduled_FTE')
+                    
+                    gap = demand.merge(supply, on='Time', how='outer').fillna(0)
+                    gap['Variance'] = gap['Scheduled_FTE'] - gap['Req_FTE']
+                    gap = gap.sort_values(by='Time')
+                    
+                    fig = go.Figure(go.Bar(x=gap['Time'], y=gap['Variance'], marker_color=np.where(gap['Variance'] < 0, '#ef4444', '#10b981')))
+                    fig.update_layout(template="plotly_white", title="FTE Variance by 30-Min Interval")
+                    st.plotly_chart(fig, use_container_width=True)
 
 elif menu == "Real-Time Ops":
     render_header("Live Command Center")
@@ -680,10 +690,10 @@ elif menu == "Agent Portal":
     e_db = st.session_state.exception_logs
     
     st.write("### 🗓️ My Published Shifts (Masked)")
-    if not s_db.empty:
+    if not s_db.empty and 'Agent' in s_db.columns:
         my_sch = s_db[s_db['Agent'].str.lower() == st.session_state.current_email.lower()].copy()
         if not my_sch.empty:
-            if not e_db.empty:
+            if not e_db.empty and 'Agent' in e_db.columns:
                 my_exc = e_db[(e_db['Agent'].str.lower() == st.session_state.current_email.lower()) & (e_db['Status'] == 'Approved')]
                 merged = my_sch.merge(my_exc[['Date', 'Start Time', 'Type']], left_on=['Date', 'Time'], right_on=['Date', 'Start Time'], how='left')
                 merged['Live_Status'] = merged['Type'].fillna(merged['Base_Activity'])
