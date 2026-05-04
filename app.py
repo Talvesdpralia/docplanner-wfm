@@ -166,12 +166,20 @@ def aggregate_wfm(df, group_cols):
     return agg
 
 def generate_time_slots():
-    return [f"{str(h).zfill(2)}:{str(m).zfill(2)}" for h in range(8, 20) for m in (0, 30)]
+    return [f"{str(h).zfill(2)}:{str(m).zfill(2)}" for h in range(0, 24) for m in (0, 30)]
 
 def sync_from_cloud():
     try:
         st.session_state.user_db = conn.query("SELECT * FROM user_db;", ttl="0m")
-        st.session_state.master_data = conn.query("SELECT * FROM master_data;", ttl="0m")
+        
+        # Load master_data and safely split Date and Time for the app's internal engines
+        md = conn.query("SELECT * FROM master_data;", ttl="0m")
+        if not md.empty and 'Date' in md.columns:
+            dt_series = pd.to_datetime(md['Date'], errors='coerce')
+            md['Time'] = dt_series.dt.strftime('%H:%M')
+            md['Date'] = dt_series.dt.date.astype(str)
+        st.session_state.master_data = md
+        
         st.session_state.exception_logs = conn.query("SELECT * FROM exception_logs;", ttl="0m")
         
         if 'Status' not in st.session_state.exception_logs.columns:
@@ -180,7 +188,7 @@ def sync_from_cloud():
         st.session_state.schedule_db = conn.query("SELECT * FROM schedule_db;", ttl="0m")
         st.session_state.forecast_db = conn.query("SELECT * FROM forecast_db;", ttl="0m")
     except Exception as e:
-        st.error(f"Failed to pull from Supabase. Ensure you ran the setup SQL script. Error: {e}")
+        st.error(f"Failed to pull from Supabase. Ensure database tables exist. Error: {e}")
         st.session_state.user_db = pd.DataFrame([{"email": "telmo.alves@docplanner.com", "password": "sso", "role": "Admin"}])
         st.session_state.master_data = pd.DataFrame(columns=["Date", "Time", "Country", "Channel", "Volume", "SLA", "AHT", "FTE"])
         st.session_state.exception_logs = pd.DataFrame(columns=["Country", "Date", "Start Time", "Agent", "Type", "Duration (Min)", "Notes", "Status"])
@@ -194,9 +202,9 @@ if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
     sync_from_cloud()
 
-client_id = st.secrets["google_auth"]["client_id"]
-client_secret = st.secrets["google_auth"]["client_secret"]
-redirect_uri = st.secrets["google_auth"]["redirect_uri"]
+client_id = st.secrets.get("google_auth", {}).get("client_id", "")
+client_secret = st.secrets.get("google_auth", {}).get("client_secret", "")
+redirect_uri = st.secrets.get("google_auth", {}).get("redirect_uri", "")
 
 query_params = st.query_params
 if not st.session_state.logged_in and "code" in query_params:
@@ -213,7 +221,6 @@ if not st.session_state.logged_in and "code" in query_params:
         token_data = response.json()
         
         if "id_token" in token_data:
-            # THIS IS THE REAL AUTH LOGIC RESTORED
             req = google.auth.transport.requests.Request()
             id_info = id_token.verify_oauth2_token(token_data["id_token"], req, client_id)
             email = id_info.get("email")
@@ -243,7 +250,6 @@ if not st.session_state.logged_in:
         st.image("https://www.docplanner.com/img/logo-default-group-en.svg", width=180)
         st.title("Workforce Workspace")
         
-        # TARGET=_BLANK AND ENCODED_URI RESTORED
         encoded_uri = urllib.parse.quote(redirect_uri, safe='')
         auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?client_id={client_id}&redirect_uri={encoded_uri}&response_type=code&scope=openid%20email%20profile&prompt=consent"
         
@@ -258,7 +264,7 @@ if not st.session_state.logged_in:
     st.stop()
 
 # ==========================================
-# 4. GLOBAL ASSETS
+# 4. GLOBAL ASSETS & NAVIGATION
 # ==========================================
 DP_LOGO = "https://www.docplanner.com/img/logo-default-group-en.svg"
 COUNTRIES = ["Spain", "Mexico", "Poland", "Germany", "Italy", "Brazil", "Colombia", "Turkey"]
@@ -271,9 +277,6 @@ nav_icons = {
     "Real-Time Ops": "📡"
 }
 
-# ==========================================
-# 5. NAVIGATION & PERMISSIONS
-# ==========================================
 role = st.session_state.user_role
 if role == "Admin":
     menu_options = ["Dashboard", "Import Data", "Forecasting", "Scheduling", "Exception Management", "Capacity Planner (Erlang)", "Reporting Center", "Real-Time Ops", "Admin Panel", "System Status"]
@@ -311,7 +314,7 @@ def render_header(title):
     st.markdown(f'<div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;"><span style="font-size:1.6rem;color:{DP_TEAL};opacity:0.8;">{icon}</span><h1 style="margin:0 !important;">{title}</h1></div>', unsafe_allow_html=True)
 
 # ==========================================
-# 6. MAIN MODULES
+# 5. MAIN MODULES
 # ==========================================
 
 if menu == "Dashboard":
@@ -348,7 +351,7 @@ elif menu == "Import Data":
     render_header("Data Ingestion & Aggregation")
     st.write("### 1. Upload Raw Historical Data (telmo_forecast_v1 format)")
     st.markdown("""
-    The system will automatically parse the exact timestamps, aggregate them into 30-minute intervals, count the volume, and convert `aht_minutes` into seconds for the Erlang-C model.
+    The system will automatically parse the exact timestamps, aggregate them into 30-minute intervals, and convert `aht_minutes` into seconds for the Erlang-C model. It aligns perfectly with your Supabase schema.
     """)
     up = st.file_uploader("Drop Market CSV File", type="csv")
     
@@ -363,17 +366,20 @@ elif menu == "Import Data":
                 raw_df['date_timestamp'] = pd.to_datetime(raw_df['date_timestamp'], errors='coerce')
                 raw_df = raw_df.dropna(subset=['date_timestamp'])
                 
-                # Floor exactly to 30-minute blocks
+                # Floor exactly to 30-minute blocks and combine to the format expected by the DB
                 raw_df['interval'] = raw_df['date_timestamp'].dt.floor('30min')
-                raw_df['Date'] = raw_df['interval'].dt.date.astype(str)
-                raw_df['Time'] = raw_df['interval'].dt.strftime('%H:%M')
+                raw_df['Date'] = raw_df['interval'].dt.strftime('%Y-%m-%d %H:%M:%S')
                 
-                agg_df = raw_df.groupby(['Date', 'Time', 'country', 'channel']).agg(
+                agg_df = raw_df.groupby(['Date', 'country', 'channel']).agg(
                     Volume=('case_id', 'count'),
                     AHT=('aht_minutes', lambda x: x.mean() * 60) # Convert to seconds
                 ).reset_index()
                 
                 agg_df.rename(columns={'country': 'Country', 'channel': 'Channel'}, inplace=True)
+                
+                # Assign defaults for SLA and FTE to match the Database definition
+                agg_df['SLA'] = 0.80
+                agg_df['FTE'] = 0.0
                 
                 st.write("### Aggregated 30-Min Intervals Ready for Database")
                 st.dataframe(agg_df.head(10))
