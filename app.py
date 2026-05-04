@@ -277,6 +277,7 @@ if not st.session_state.logged_in:
 # ==========================================
 DP_LOGO = "https://www.docplanner.com/img/logo-default-group-en.svg"
 COUNTRIES = ["Spain", "Mexico", "Poland", "Germany", "Italy", "Brazil", "Colombia", "Turkey"]
+COUNTRY_MAPPING = {"Spain": "ES", "Mexico": "MX", "Poland": "PL", "Germany": "DE", "Italy": "IT", "Brazil": "BR", "Colombia": "CO", "Turkey": "TR"}
 CHANNELS = ["Phone", "Chat", "WhatsApp", "Email"]
 
 nav_icons = {
@@ -420,23 +421,39 @@ elif menu == "Forecasting":
                 if st.button(f"🚀 Generate 90-Day Plan for {target_country}"):
                     with st.spinner(f"Pulling Live Roster & Generating Schedule for {target_country}..."):
                         
-                        # --- START ROSTER FETCH LOGIC ---
+                        # --- START ROSTER FETCH & FILTER LOGIC ---
                         team_roster_df = fetch_google_roster()
                         country_names = []
                         if team_roster_df.empty:
                             st.warning("⚠️ Could not load Google Sheet. Ensure it is set to 'Anyone with the link can view'. Proceeding with placeholder names.")
                         else:
-                            # Fuzzy matching for column names
-                            c_col = next((c for c in team_roster_df.columns if 'country' in c.lower()), None)
-                            n_col = next((c for c in team_roster_df.columns if 'name' in c.lower() or 'agent' in c.lower()), None)
-                            
+                            # Standardize headers to lowercase to ensure flexible matching
+                            cols = {str(c).lower().strip(): c for c in team_roster_df.columns}
+                            c_col = next((cols[c] for c in cols if 'country' in c), None)
+                            n_col = next((cols[c] for c in cols if 'name' in c or 'agent' in c), None)
+                            r_col = next((cols[c] for c in cols if 'role' in c), None)
+                            e_col = next((cols[c] for c in cols if 'end date' in c or 'end_date' in c), None)
+
                             if c_col and n_col:
-                                country_names = team_roster_df[team_roster_df[c_col].str.contains(target_country, case=False, na=False)][n_col].dropna().unique().tolist()
+                                mapped_ctry = COUNTRY_MAPPING.get(target_country, target_country)
+                                
+                                # Filter 1: Match the specific country (Check both "Mexico" and "MX")
+                                df_f = team_roster_df[team_roster_df[c_col].astype(str).str.contains(f"{target_country}|{mapped_ctry}", case=False, na=False)]
+                                
+                                # Filter 2: Match specifically Role = CC agent
+                                if r_col:
+                                    df_f = df_f[df_f[r_col].astype(str).str.contains("CC agent", case=False, na=False)]
+                                    
+                                # Filter 3: End date must be BLANK (active employee)
+                                if e_col:
+                                    df_f = df_f[df_f[e_col].isna() | (df_f[e_col].astype(str).str.strip() == '') | (df_f[e_col].astype(str).str.lower() == 'nan')]
+                                    
+                                country_names = df_f[n_col].dropna().unique().tolist()
                                 if not country_names:
-                                    st.warning(f"⚠️ Google Sheet loaded, but found 0 matching agents for '{target_country}'. Proceeding with placeholder names.")
+                                    st.warning(f"⚠️ Found 0 active 'CC agents' for {target_country} / {mapped_ctry}. Proceeding with placeholder names.")
                             else:
-                                st.warning("⚠️ Google Sheet loaded, but couldn't find columns named 'Country' and 'Name'. Proceeding with placeholder names.")
-                        # --- END ROSTER FETCH LOGIC ---
+                                st.warning("⚠️ Google Sheet loaded, but couldn't find columns named 'Country' and 'Name'.")
+                        # --- END ROSTER FETCH & FILTER LOGIC ---
                         
                         country_df = df[df['Country'] == target_country].copy()
                         
@@ -473,17 +490,21 @@ elif menu == "Forecasting":
                                         "Channel": row['Channel'], "Forecast_Volume": vol, "Req_FTE": req_fte
                                     })
                                     
-                                    # Map Real Names from Google Sheet
-                                    for i in range(1, req_fte + 1):
-                                        if i <= len(country_names):
-                                            agent_name = country_names[i-1] # Grab real name
+                                    # Distribute activities across the FULL roster (Surplus Logic)
+                                    total_slots_to_fill = max(req_fte, len(country_names))
+                                    for i in range(total_slots_to_fill):
+                                        if i < len(country_names):
+                                            agent_name = country_names[i]
                                         else:
-                                            # Overflow protection if requirement exceeds physical headcount
-                                            agent_name = f"Overflow_Agent_{str(i).zfill(2)}_{target_country}"
+                                            # If required FTE is extremely high and we ran out of real people
+                                            agent_name = f"Overflow_Agent_{str(i - len(country_names) + 1).zfill(2)}_{target_country}"
+                                            
+                                        # Give activity to the required number, give blank/surplus to the rest
+                                        base_activity = "Phone & Cases" if i < req_fte else "-"
                                             
                                         schedule_rows.append({
                                             "Country": row['Country'], "YearMonth": ym_str, "Date": d_str, "Time": row['Time'],
-                                            "Agent": agent_name, "Base_Activity": "Phone & Cases"
+                                            "Agent": agent_name, "Base_Activity": base_activity
                                         })
                             
                             f_df = pd.DataFrame(forecast_rows)
@@ -500,7 +521,7 @@ elif menu == "Forecasting":
                                 if not s_df.empty:
                                     s_df.to_sql('schedule_db', con=conn.engine, if_exists='append', index=False)
                                 
-                                st.success(f"Generated {len(f_df)} forecast intervals and {len(s_df)} base schedule rows for {target_country}.")
+                                st.success(f"Generated plan for {target_country}! Roster spans {len(country_names)} active CC agents.")
                                 sync_from_cloud()
                             except Exception as e:
                                 error_msg = str(e)
@@ -542,7 +563,6 @@ elif menu == "Scheduling":
     e_db = st.session_state.exception_logs
     
     if not s_db.empty and 'Country' in s_db.columns:
-        # Added dedicated Country Dropdown for the Scheduling Module
         available_countries = sorted(s_db['Country'].unique())
         
         c1, c2, c3 = st.columns([1, 1, 2])
@@ -567,6 +587,8 @@ elif menu == "Scheduling":
                     right_on=['Agent', 'Start Time'],
                     how='left'
                 )
+                
+                # Exception overwrites base activity. If no exception, keep base activity.
                 merged['Live_Status'] = merged['Type'].fillna(merged['Base_Activity'])
                 final_df = merged[['Agent', 'Time', 'Live_Status']]
             else:
@@ -672,7 +694,9 @@ elif menu == "Capacity Planner (Erlang)":
         if view_scale == "Daily Overview":
             if 'Date' in f_market.columns and 'Req_FTE' in f_market.columns:
                 demand = f_market.groupby('Date')['Req_FTE'].max().reset_index()
-                supply = s_market.groupby(['Date', 'Agent']).size().reset_index().groupby('Date').size().reset_index(name='Scheduled_FTE')
+                # Use only agents actually scheduled (not surplus blank spaces) to calculate supply
+                scheduled_only = s_market[s_market['Base_Activity'] != "-"]
+                supply = scheduled_only.groupby(['Date', 'Agent']).size().reset_index().groupby('Date').size().reset_index(name='Scheduled_FTE')
                 gap = demand.merge(supply, on='Date', how='outer').fillna(0)
                 gap['Variance'] = gap['Scheduled_FTE'] - gap['Req_FTE']
                 
@@ -685,7 +709,8 @@ elif menu == "Capacity Planner (Erlang)":
                 if dates:
                     sel_date = st.selectbox("Select Date", dates)
                     demand = f_market[f_market['Date'] == sel_date].groupby('Time')['Req_FTE'].sum().reset_index()
-                    supply = s_market[s_market['Date'] == sel_date].groupby('Time')['Agent'].count().reset_index(name='Scheduled_FTE')
+                    scheduled_only = s_market[(s_market['Date'] == sel_date) & (s_market['Base_Activity'] != "-")]
+                    supply = scheduled_only.groupby('Time')['Agent'].count().reset_index(name='Scheduled_FTE')
                     
                     gap = demand.merge(supply, on='Time', how='outer').fillna(0)
                     gap['Variance'] = gap['Scheduled_FTE'] - gap['Req_FTE']
