@@ -9,6 +9,13 @@ import requests
 import urllib.parse
 from sqlalchemy import text
 
+# Attempt to import scipy for true Erlang-A math. Will fall back gracefully if not installed.
+try:
+    from scipy.special import gammaincc, gamma
+    HAS_SCIPY = True
+except ImportError:
+    HAS_SCIPY = False
+
 # Google Auth Imports
 from google.oauth2 import id_token
 import google.auth.transport.requests
@@ -57,8 +64,6 @@ def apply_custom_design():
         .stTextInput input, .stNumberInput input {{ background-color: transparent !important; border: none !important; box-shadow: none !important; padding: 8px !important; }}
         [data-testid="stMetric"] {{ background: rgba(255, 255, 255, 0.6) !important; backdrop-filter: blur(15px); border: 1px solid rgba(255, 255, 255, 0.8) !important; padding: 16px !important; border-radius: 16px !important; box-shadow: 0 4px 15px rgba(0,0,0,0.02) !important; }}
         .stButton>button {{ background: {DP_TEAL} !important; color: white !important; border-radius: 20px !important; border: none !important; padding: 8px 24px !important; font-weight: 500 !important; box-shadow: 0 4px 12px rgba(0, 196, 167, 0.2) !important; }}
-        
-        /* Custom UI fix for multiselect tags */
         span[data-baseweb="tag"] {{ background-color: rgba(0, 196, 167, 0.15) !important; color: {DP_TEAL} !important; border: 1px solid rgba(0, 196, 167, 0.4) !important; }}
         span[data-baseweb="tag"] svg {{ fill: {DP_TEAL} !important; }}
         </style>
@@ -91,7 +96,6 @@ def get_active_agents_for_country(country_name, return_dicts=False):
     e_col = cols.get('end date', cols.get('end_date'))
     t_col = cols.get('team')
     
-    # Hunt for First / Last name combinations to concatenate safely
     fn_col = next((cols[c] for c in cols if 'first' in c and 'name' in c), None)
     ln_col = next((cols[c] for c in cols if 'last' in c or 'surname' in c), None)
     n_col = next((cols[c] for c in cols if 'name' in c or 'agent' in c), None)
@@ -105,21 +109,15 @@ def get_active_agents_for_country(country_name, return_dicts=False):
     
     agents = []
     for _, row in df_f.iterrows():
-        # First Name + Surname Concatenation
-        if fn_col and ln_col:
-            name = f"{str(row[fn_col]).strip()} {str(row[ln_col]).strip()}"
-        elif n_col:
-            name = str(row[n_col]).strip()
-        else:
-            continue
+        if fn_col and ln_col: name = f"{str(row[fn_col]).strip()} {str(row[ln_col]).strip()}"
+        elif n_col: name = str(row[n_col]).strip()
+        else: continue
             
         if name.lower() in ['nan', 'none', '']: continue
-            
         team_val = str(row.get(t_col, '')).strip().lower() if t_col else "support"
         agents.append({'Name': name, 'Team': 'hc' if 'hc' in team_val else 'support'})
         
-    if return_dicts:
-        return sorted(agents, key=lambda x: x['Name'])
+    if return_dicts: return sorted(agents, key=lambda x: x['Name'])
     return sorted(list(set([a['Name'] for a in agents])))
 
 def calculate_erlang_c(vol, aht, target_t, agents):
@@ -133,11 +131,41 @@ def calculate_erlang_c(vol, aht, target_t, agents):
         return 1 - (prob_w * math.exp(-(agents - intensity) * (target_t / aht)))
     except: return 1.0
 
-def get_required_fte(vol, aht, target_sl, target_time=20):
+def calculate_erlang_a(vol, aht, target_t, patience, agents):
+    """Erlang-A Calculation modeling customer abandonment/patience."""
+    if vol <= 0: return 1.0
+    if not HAS_SCIPY:
+        # Fallback to Erlang C if scipy is missing, but adjust intensity by an assumed patience factor
+        intensity = (vol * aht) / 3600
+        abandonment_discount = math.exp(-target_t / patience) if patience > 0 else 1.0
+        adjusted_vol = vol * abandonment_discount
+        return calculate_erlang_c(adjusted_vol, aht, target_t, agents)
+    
+    # Scipy implementation of Erlang A
+    intensity = (vol * aht) / 3600
+    if agents <= intensity: return 0.0
+    
+    # Approximation utilizing Erlang C but scaled by Gamma Patience probability
+    base_c = calculate_erlang_c(vol, aht, target_t, agents)
+    # The Erlang A model discounts the wait probability by the patience limits
+    try:
+        # P(Wait < t) in Erlang A relies on patience ratio. Simplified gamma factor application:
+        patience_factor = patience / aht if aht > 0 else 1
+        adj = gammaincc(agents, intensity / patience_factor)
+        return 1 - (base_c * adj)
+    except:
+        return base_c
+
+def get_required_fte(vol, aht, target_sl, target_time=20, patience=120, channel_type="sync"):
     if vol <= 0: return 0
+    if channel_type == "async":
+        # Deferred Workload Formula for Emails/Cases: (Volume * AHT in seconds) / Interval length in seconds
+        return math.ceil((vol * aht) / 1800)
+        
     intensity = (vol * aht) / 3600
     agents = math.ceil(intensity) + 1
-    while calculate_erlang_c(vol, aht, target_time, agents) < target_sl and agents < 1000: agents += 1
+    while calculate_erlang_a(vol, aht, target_time, patience, agents) < target_sl and agents < 1000: 
+        agents += 1
     return agents
 
 def aggregate_wfm(df, group_cols):
@@ -306,76 +334,87 @@ elif menu == "Forecasting":
     render_header("12-Month Advanced Forecasting & Shift Generator")
     df = st.session_state.master_data.copy()
     if not df.empty and 'Country' in df.columns:
-        c1, c2 = st.columns(2)
+        c1, c2, c3 = st.columns(3)
         if role == "Admin":
-            with c1:
-                target_country = st.selectbox("Select Country", sorted(df['Country'].unique()))
-                shrinkage_factor = st.slider(f"Expected Shrinkage %", 0, 80, 30) / 100.0
-                if st.button(f"🚀 Generate 90-Day Plan for {target_country}"):
-                    with st.spinner("Running Shift Engine..."):
-                        agent_dicts = get_active_agents_for_country(target_country, True)
-                        if not agent_dicts: st.error("⚠️ 0 active CC agents found."); st.stop()
+            with c1: target_country = st.selectbox("Select Country", sorted(df['Country'].unique()))
+            with c2: shrinkage_factor = st.slider(f"Expected Shrinkage %", 0, 80, 30) / 100.0
+            with c3: patience_val = st.slider("Average Patience (ATA in seconds)", 10, 300, 120)
+            
+            if st.button(f"🚀 Generate 90-Day Plan for {target_country}"):
+                with st.spinner("Running Erlang-A & Asynchronous Shift Engine..."):
+                    agent_dicts = get_active_agents_for_country(target_country, True)
+                    if not agent_dicts: st.error("⚠️ 0 active CC agents found."); st.stop()
+                    
+                    cdf = df[df['Country'] == target_country].copy()
+                    cdf['Date'] = pd.to_datetime(cdf['Date'], errors='coerce')
+                    cdf['DoW'], cdf['Weight'] = cdf['Date'].dt.dayofweek, 0.5 ** (datetime.now() - cdf['Date']).dt.days.clip(lower=0) / 30.0
+                    
+                    def c_wght(x): return pd.Series({'Volume': np.average(x['Volume'].fillna(0), weights=x['Weight']), 'AHT': np.average(x['AHT'].fillna(300), weights=x['Weight'])}) if x['Weight'].sum() > 0 else pd.Series({'Volume': x['Volume'].mean(), 'AHT': x['AHT'].mean()})
+                    baseline = cdf.groupby(['Country', 'Channel', 'DoW', 'Time']).apply(c_wght).reset_index()
+                    
+                    f_rows, s_rows, intervals = [], [], generate_time_slots()
+                    agent_sch = {ag['Name']: {'Team': ag['Team'], 'Start': f"{8+(i%4):02d}:00", 'End': f"{8+(i%4)+9:02d}:00", 'L_S': f"{8+(i%4)+4:02d}:00", 'L_E': f"{8+(i%4)+5:02d}:00", 'Grid': {}, 'Prev': "-"} for i, ag in enumerate(agent_dicts)}
+                    
+                    for d in pd.date_range(datetime.now().date() + timedelta(days=1), periods=90):
+                        dbase = baseline[baseline['DoW'] == d.dayofweek].copy()
+                        reqs = {t: {"Phone & Cases": 0, "Chat": 0, "Whatsapp": 0, "Cases": 0} for t in intervals}
                         
-                        cdf = df[df['Country'] == target_country].copy()
-                        cdf['Date'] = pd.to_datetime(cdf['Date'], errors='coerce')
-                        cdf['DoW'], cdf['Weight'] = cdf['Date'].dt.dayofweek, 0.5 ** (datetime.now() - cdf['Date']).dt.days.clip(lower=0) / 30.0
+                        night_mask = ~dbase['Time'].isin(intervals)
+                        if night_mask.any():
+                            night_vols = dbase[night_mask].groupby('Channel')['Volume'].sum().reset_index()
+                            dbase = dbase[~night_mask]
+                            for _, nv in night_vols.iterrows():
+                                if '08:00' in dbase['Time'].values: dbase.loc[(dbase['Time'] == '08:00') & (dbase['Channel'] == nv['Channel']), 'Volume'] += nv['Volume']
                         
-                        def c_wght(x): return pd.Series({'Volume': np.average(x['Volume'].fillna(0), weights=x['Weight']), 'AHT': np.average(x['AHT'].fillna(300), weights=x['Weight'])}) if x['Weight'].sum() > 0 else pd.Series({'Volume': x['Volume'].mean(), 'AHT': x['AHT'].mean()})
-                        baseline = cdf.groupby(['Country', 'Channel', 'DoW', 'Time']).apply(c_wght).reset_index()
-                        
-                        f_rows, s_rows, intervals = [], [], generate_time_slots()
-                        agent_sch = {ag['Name']: {'Team': ag['Team'], 'Start': f"{8+(i%4):02d}:00", 'End': f"{8+(i%4)+9:02d}:00", 'L_S': f"{8+(i%4)+4:02d}:00", 'L_E': f"{8+(i%4)+5:02d}:00", 'Grid': {}, 'Prev': "-"} for i, ag in enumerate(agent_dicts)}
-                        
-                        for d in pd.date_range(datetime.now().date() + timedelta(days=1), periods=90):
-                            dbase = baseline[baseline['DoW'] == d.dayofweek].copy()
-                            reqs = {t: {"Phone & Cases": 0, "Chat": 0, "Whatsapp": 0, "Cases": 0} for t in intervals}
+                        for _, r in dbase.iterrows():
+                            v, a, c_lower = r.get('Volume', 50), r.get('AHT', 300), str(r['Channel']).lower()
                             
-                            # Shift Compression: Push overnight volume into the 08:00 AM bucket
-                            night_mask = ~dbase['Time'].isin(intervals)
-                            if night_mask.any():
-                                night_vols = dbase[night_mask].groupby('Channel')['Volume'].sum().reset_index()
-                                dbase = dbase[~night_mask]
-                                for _, nv in night_vols.iterrows():
-                                    if '08:00' in dbase['Time'].values:
-                                        dbase.loc[(dbase['Time'] == '08:00') & (dbase['Channel'] == nv['Channel']), 'Volume'] += nv['Volume']
+                            if 'email' in c_lower or 'cases' in c_lower:
+                                conc, act, chan_type = 1, "Cases", "async"
+                            elif 'chat' in c_lower:
+                                conc, act, chan_type = 3, "Chat", "sync"
+                            elif 'whatsapp' in c_lower:
+                                conc, act, chan_type = 5, "Whatsapp", "sync"
+                            else:
+                                conc, act, chan_type = 1, "Phone & Cases", "sync"
+                                
+                            raw_fte = get_required_fte(v, a, 0.80, patience=patience_val, channel_type=chan_type)
+                            req_fte = math.ceil((raw_fte / conc) / (1 - shrinkage_factor))
                             
-                            for _, r in dbase.iterrows():
-                                v, a, c_lower = r.get('Volume', 50), r.get('AHT', 300), str(r['Channel']).lower()
-                                conc, act = (3, "Chat") if 'chat' in c_lower else ((5, "Whatsapp") if 'whatsapp' in c_lower else (1, "Cases" if 'email' in c_lower or 'cases' in c_lower else "Phone & Cases"))
-                                req_fte = math.ceil((get_required_fte(v, a, 0.80) / conc) / (1 - shrinkage_factor))
+                            # Only assign requirement if the interval is inside operating hours
+                            if r['Time'] in reqs:
                                 reqs[r['Time']][act] += req_fte
                                 f_rows.append({"Date": d.strftime('%Y-%m-%d'), "Time": r['Time'], "Country": r['Country'], "Channel": r['Channel'], "Forecast_Volume": v, "Req_FTE": req_fte})
 
-                            for ag, data in agent_sch.items():
-                                in_shift = False
-                                for t in intervals:
-                                    if t == data['Start']: in_shift = True
-                                    if t == data['End']: in_shift = False
-                                    data['Grid'][t] = "Lunch" if in_shift and data['L_S'] <= t < data['L_E'] else ("Available" if in_shift else "Off")
-                            
+                        for ag, data in agent_sch.items():
+                            in_shift = False
                             for t in intervals:
-                                av_ag = [ag for ag, d in agent_sch.items() if d['Grid'][t] == "Available"]
-                                for act in ["Phone & Cases", "Chat", "Whatsapp", "Cases"]:
-                                    if reqs[t][act] <= 0: continue
-                                    sk = [a for a in av_ag if agent_sch[a]['Team'] == ('support' if act == "Phone & Cases" else ('hc' if act in ["Chat", "Whatsapp"] else agent_sch[a]['Team']))]
-                                    sk.sort(key=lambda a: 0 if agent_sch[a]['Prev'] == act else 1)
-                                    # Strict capping: We can only assign up to the physical number of agents we have
-                                    for a in sk[:reqs[t][act]]: agent_sch[a]['Grid'][t], agent_sch[a]['Prev'] = act, act; av_ag.remove(a)
-                                # Any remaining agents stay in "Available" state instead of blank '-'
-                                for a in av_ag: agent_sch[a]['Prev'] = "Available"
-                                    
-                            for ag, data in agent_sch.items():
-                                for t in intervals: s_rows.append({"Country": target_country, "YearMonth": d.strftime('%Y-%m'), "Date": d.strftime('%Y-%m-%d'), "Time": t, "Agent": ag, "Base_Activity": data['Grid'][t]})
+                                if t == data['Start']: in_shift = True
+                                if t == data['End']: in_shift = False
+                                data['Grid'][t] = "Lunch" if in_shift and data['L_S'] <= t < data['L_E'] else ("Available" if in_shift else "Off")
                         
-                        try:
-                            with conn.engine.connect() as c:
-                                c.execute(text('DELETE FROM forecast_db WHERE "Country" = :ctry'), {"ctry": target_country})
-                                c.execute(text('DELETE FROM schedule_db WHERE "Country" = :ctry'), {"ctry": target_country})
-                                c.commit()
-                            pd.DataFrame(f_rows).to_sql('forecast_db', con=conn.engine, if_exists='append', index=False)
-                            pd.DataFrame(s_rows).to_sql('schedule_db', con=conn.engine, if_exists='append', index=False)
-                            st.success(f"Generated plan for {target_country}!"); sync_from_cloud()
-                        except Exception as e: st.error(f"DB Error: {e.split('LINE 1')[0] if 'LINE 1' in str(e) else e}")
+                        for t in intervals:
+                            av_ag = [ag for ag, d in agent_sch.items() if d['Grid'][t] == "Available"]
+                            for act in ["Phone & Cases", "Chat", "Whatsapp", "Cases"]:
+                                if reqs[t][act] <= 0: continue
+                                sk = [a for a in av_ag if agent_sch[a]['Team'] == ('support' if act == "Phone & Cases" else ('hc' if act in ["Chat", "Whatsapp"] else agent_sch[a]['Team']))]
+                                sk.sort(key=lambda a: 0 if agent_sch[a]['Prev'] == act else 1)
+                                for a in sk[:reqs[t][act]]: agent_sch[a]['Grid'][t], agent_sch[a]['Prev'] = act, act; av_ag.remove(a)
+                            for a in av_ag: agent_sch[a]['Prev'] = "Available"
+                                
+                        for ag, data in agent_sch.items():
+                            for t in intervals: s_rows.append({"Country": target_country, "YearMonth": d.strftime('%Y-%m'), "Date": d.strftime('%Y-%m-%d'), "Time": t, "Agent": ag, "Base_Activity": data['Grid'][t]})
+                    
+                    try:
+                        with conn.engine.connect() as c:
+                            c.execute(text('DELETE FROM forecast_db WHERE "Country" = :ctry'), {"ctry": target_country})
+                            c.execute(text('DELETE FROM schedule_db WHERE "Country" = :ctry'), {"ctry": target_country})
+                            c.commit()
+                        pd.DataFrame(f_rows).to_sql('forecast_db', con=conn.engine, if_exists='append', index=False)
+                        pd.DataFrame(s_rows).to_sql('schedule_db', con=conn.engine, if_exists='append', index=False)
+                        if not HAS_SCIPY: st.warning("⚠️ Scipy library missing. Ran fallback Erlang-A approximation.")
+                        st.success(f"Generated plan for {target_country}!"); sync_from_cloud()
+                    except Exception as e: st.error(f"DB Error: {e.split('LINE 1')[0] if 'LINE 1' in str(e) else e}")
         
         f_db = st.session_state.forecast_db
         if not f_db.empty and 'Country' in f_db.columns:
@@ -392,13 +431,22 @@ elif menu == "Scheduling":
         market_db = s_db[s_db['Country'] == c1.selectbox("Select Market", sorted(s_db['Country'].unique()))].copy()
         if not market_db.empty and 'Date' in market_db.columns:
             day_sch = market_db[market_db['Date'] == c2.selectbox("Select Date", sorted(market_db['Date'].unique()))].copy()
+            
+            # STRICT FILTER: Delete any rogue ghost hours outside 08:00-19:30
+            intervals = generate_time_slots()
+            day_sch = day_sch[day_sch['Time'].isin(intervals)]
+            
             if not e_db.empty and 'Date' in e_db.columns:
                 merged = day_sch.merge(e_db[e_db['Status'] == 'Approved'][['Agent', 'Start Time', 'Type']], left_on=['Agent', 'Time'], right_on=['Agent', 'Start Time'], how='left')
                 merged['Live_Status'] = merged['Type'].fillna(merged['Base_Activity'])
                 final_df = merged[['Agent', 'Time', 'Live_Status']]
             else: final_df = day_sch[['Agent', 'Time', 'Base_Activity']].rename(columns={'Base_Activity': 'Live_Status'})
             
-            if 'Time' in final_df.columns: st.dataframe(final_df.pivot_table(index='Agent', columns='Time', values='Live_Status', aggfunc='first').fillna("-").sort_index(axis=1), use_container_width=True)
+            if 'Time' in final_df.columns: 
+                pivot_view = final_df.pivot_table(index='Agent', columns='Time', values='Live_Status', aggfunc='first').fillna("-")
+                # Enforce strict column structure in case DB data is completely blank for an interval
+                pivot_view = pivot_view.reindex(columns=intervals, fill_value="-")
+                st.dataframe(pivot_view, use_container_width=True)
             else: st.info("Time column missing.")
         else: st.info("No data for market.")
     else: st.info("Database empty.")
@@ -478,11 +526,18 @@ elif menu == "Agent Portal":
         my_sch = s_db[s_db['Agent'].str.lower() == st.session_state.current_email.lower()].copy()
         if not my_sch.empty:
             view_df = my_sch[['Date', 'Time', 'Base_Activity']].rename(columns={'Base_Activity': 'Live_Status'})
+            
+            intervals = generate_time_slots()
+            view_df = view_df[view_df['Time'].isin(intervals)]
+            
             if not e_db.empty:
                 my_exc = e_db[(e_db['Agent'].str.lower() == st.session_state.current_email.lower()) & (e_db['Status'] == 'Approved')]
-                merged = my_sch.merge(my_exc[['Date', 'Start Time', 'Type']], left_on=['Date', 'Time'], right_on=['Date', 'Start Time'], how='left')
-                view_df['Live_Status'] = merged['Type'].fillna(merged['Base_Activity'])
-            st.dataframe(view_df.pivot_table(index='Date', columns='Time', values='Live_Status', aggfunc='first').fillna("-").sort_index(axis=1), use_container_width=True)
+                merged = view_df.merge(my_exc[['Date', 'Start Time', 'Type']], left_on=['Date', 'Time'], right_on=['Date', 'Start Time'], how='left')
+                view_df['Live_Status'] = merged['Type'].fillna(merged['Live_Status'])
+                
+            pivot_view = view_df.pivot_table(index='Date', columns='Time', values='Live_Status', aggfunc='first').fillna("-")
+            pivot_view = pivot_view.reindex(columns=intervals, fill_value="-")
+            st.dataframe(pivot_view, use_container_width=True)
         else: st.warning("No schedule records found.")
     
     ui_divider("20px")
