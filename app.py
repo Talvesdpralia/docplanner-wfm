@@ -364,12 +364,10 @@ def render_header(title):
 if menu == "Dashboard":
     render_header("Executive Dashboard")
     
-    # Custom Dashboard Filters
     st.write("### 🔍 Dashboard Filters")
     fc1, fc2 = st.columns(2)
     dash_markets = fc1.multiselect("Filter Target Markets", COUNTRIES, default=selected_markets)
     
-    # Fetch agents based on selected dash markets dynamically
     potential_dash_agents = []
     for m in dash_markets:
         potential_dash_agents.extend(get_active_agents_for_country(m))
@@ -377,7 +375,6 @@ if menu == "Dashboard":
     
     st.markdown("<hr style='margin: 20px 0; border-color: rgba(0,0,0,0.05);'>", unsafe_allow_html=True)
     
-    # 1. Performance Overview
     st.write("### Volume & Performance Overview")
     df = st.session_state.master_data
     if not df.empty and 'Country' in df.columns:
@@ -408,11 +405,12 @@ if menu == "Dashboard":
 
     st.markdown("<hr style='margin: 20px 0; border-color: rgba(0,0,0,0.05);'>", unsafe_allow_html=True)
     
-    # 2. Adherence Engine
     st.write("### Adherence to Schedule (%)")
-    st.caption("*(Framework mathematical model active. Utilizing simulated live-states until API Webhooks ingest true state metrics)*")
+    st.caption("*(Calculated dynamically: Time Scheduled vs Time impacted by Exceptions)*")
     
     s_db = st.session_state.schedule_db
+    e_db = st.session_state.exception_logs
+    
     if not s_db.empty and 'Country' in s_db.columns:
         sch_adh = s_db[s_db['Country'].isin(dash_markets)].copy()
         
@@ -420,29 +418,43 @@ if menu == "Dashboard":
             sch_adh = sch_adh[sch_adh['Agent'].isin(dash_agents)]
             
         if not sch_adh.empty:
-            # Filter out Surplus/Blank intervals so we only calculate adherence on actual scheduled work
+            # Only calculate adherence for actual scheduled work (ignore Surplus '-')
             sch_adh = sch_adh[sch_adh['Base_Activity'] != "-"]
             
             if not sch_adh.empty:
-                agent_daily = sch_adh.groupby(['Date', 'Agent']).size().reset_index(name='Intervals')
-                agent_daily['Scheduled_Mins'] = agent_daily['Intervals'] * 30
+                if not e_db.empty and 'Status' in e_db.columns:
+                    app_exc = e_db[e_db['Status'] == 'Approved'].copy()
+                    
+                    # Merge schedule and exceptions to see exactly which intervals were missed
+                    merged_adh = sch_adh.merge(
+                        app_exc[['Agent', 'Date', 'Start Time', 'Type']],
+                        left_on=['Agent', 'Date', 'Time'],
+                        right_on=['Agent', 'Date', 'Start Time'],
+                        how='left'
+                    )
+                    merged_adh['Has_Exception'] = merged_adh['Type'].notna().astype(int)
+                else:
+                    sch_adh['Has_Exception'] = 0
+                    merged_adh = sch_adh
+
+                # Aggregate at the daily level
+                agent_daily = merged_adh.groupby(['Date', 'Agent']).agg(
+                    Scheduled_Intervals=('Time', 'count'),
+                    Exception_Intervals=('Has_Exception', 'sum')
+                ).reset_index()
                 
-                # Simulation Engine: Generates realistic adherence variance (80% - 99%) based on scheduled minutes
-                np.random.seed(42)
-                agent_daily['Actual_Mins'] = agent_daily['Scheduled_Mins'] * np.random.uniform(0.80, 0.99, size=len(agent_daily))
-                agent_daily['Adherence'] = (agent_daily['Actual_Mins'] / agent_daily['Scheduled_Mins']) * 100
+                # Math: If scheduled 16 ints, and 0 exceptions, adherence = 100%. If 2 exceptions, adherence = 87.5%
+                agent_daily['Adherence'] = ((agent_daily['Scheduled_Intervals'] - agent_daily['Exception_Intervals']) / agent_daily['Scheduled_Intervals']) * 100
                 
                 if dash_agents:
-                    # If specific agents selected, show individual lines
                     fig_adh = px.line(agent_daily, x='Date', y='Adherence', color='Agent', title="Agent-Level Adherence %", template="plotly_white", markers=True)
                 else:
-                    # If no agent selected, show the Market Average
                     market_daily = agent_daily.groupby('Date')['Adherence'].mean().reset_index()
                     fig_adh = px.line(market_daily, x='Date', y='Adherence', title="Market Average Adherence %", template="plotly_white", markers=True)
 
-                fig_adh.update_yaxes(range=[0, 100])
+                fig_adh.update_yaxes(range=[0, 105])
                 st.plotly_chart(fig_adh, use_container_width=True)
-            else: st.info("The selected agents do not have scheduled 'Phone & Cases' activities for the date range.")
+            else: st.info("No active work shifts found for the selected agents.")
         else: st.info("No schedule data matches the selected filters.")
     else: st.info("Schedule database is empty.")
 
@@ -504,9 +516,11 @@ elif menu == "Forecasting":
             with c1:
                 st.write("### Generate Roster by Country")
                 target_country = st.selectbox("Select Country to Generate Forecast & Schedule", available_countries_in_db)
+                shrinkage_pct = st.slider(f"Expected Shrinkage % ({target_country})", 0, 80, 30)
+                shrinkage_factor = shrinkage_pct / 100.0
                 
                 if st.button(f"🚀 Generate 90-Day Plan for {target_country}"):
-                    with st.spinner(f"Pulling Live Roster & Generating Schedule for {target_country}..."):
+                    with st.spinner(f"Running Time-Weighted Forecast & Multi-Channel Allocation for {target_country}..."):
                         
                         country_names = get_active_agents_for_country(target_country)
                         if not country_names:
@@ -520,7 +534,19 @@ elif menu == "Forecasting":
                             country_df['Date'] = pd.to_datetime(country_df['Date'], errors='coerce')
                             country_df['DoW'] = country_df['Date'].dt.dayofweek
                             
-                            baseline = country_df.groupby(['Country', 'Channel', 'DoW', 'Time'])[['Volume', 'AHT']].mean().reset_index()
+                            # Advanced Time-Weighted Decay Logic (Prioritizes recent data with a 30-day half-life)
+                            today_dt = datetime.now()
+                            country_df['Days_Ago'] = (today_dt - country_df['Date']).dt.days.clip(lower=0)
+                            country_df['Weight'] = 0.5 ** (country_df['Days_Ago'] / 30.0) 
+                            
+                            def calc_weighted(x):
+                                if x['Weight'].sum() == 0:
+                                    return pd.Series({'Volume': x['Volume'].mean(), 'AHT': x['AHT'].mean()})
+                                v = np.average(x['Volume'].fillna(0), weights=x['Weight'])
+                                a = np.average(x['AHT'].fillna(300), weights=x['Weight'])
+                                return pd.Series({'Volume': v, 'AHT': a})
+
+                            baseline = country_df.groupby(['Country', 'Channel', 'DoW', 'Time']).apply(calc_weighted).reset_index()
                             
                             start_dt = datetime.now().date() + timedelta(days=1)
                             end_dt = start_dt + timedelta(days=90)
@@ -533,32 +559,64 @@ elif menu == "Forecasting":
                                 dow = d.dayofweek
                                 d_str = d.strftime('%Y-%m-%d')
                                 ym_str = d.strftime('%Y-%m')
-                                day_base = baseline[baseline['DoW'] == dow]
                                 
-                                for _, row in day_base.iterrows():
-                                    vol = row['Volume'] if not math.isnan(row['Volume']) else 50
-                                    aht = row['AHT'] if not math.isnan(row['AHT']) else 300
+                                day_base = baseline[baseline['DoW'] == dow]
+                                intervals = day_base['Time'].unique()
+                                
+                                for t in intervals:
+                                    int_data = day_base[day_base['Time'] == t]
+                                    agent_index = 0 
                                     
-                                    req_fte = get_required_fte(vol, aht, 0.80)
-                                    
-                                    forecast_rows.append({
-                                        "Date": d_str, "Time": row['Time'], "Country": row['Country'], 
-                                        "Channel": row['Channel'], "Forecast_Volume": vol, "Req_FTE": req_fte
-                                    })
-                                    
-                                    total_slots_to_fill = max(req_fte, len(country_names))
-                                    for i in range(total_slots_to_fill):
-                                        if i < len(country_names):
-                                            agent_name = country_names[i]
-                                        else:
-                                            agent_name = f"Overflow_Agent_{str(i - len(country_names) + 1).zfill(2)}_{target_country}"
-                                            
-                                        base_activity = "Phone & Cases" if i < req_fte else "-"
-                                            
-                                        schedule_rows.append({
-                                            "Country": row['Country'], "YearMonth": ym_str, "Date": d_str, "Time": row['Time'],
-                                            "Agent": agent_name, "Base_Activity": base_activity
+                                    # Process all channels sequentially for this 30m interval
+                                    for _, row in int_data.iterrows():
+                                        vol = row['Volume'] if not math.isnan(row['Volume']) else 50
+                                        aht = row['AHT'] if not math.isnan(row['AHT']) else 300
+                                        
+                                        chan_lower = str(row['Channel']).lower()
+                                        concurrency = 1
+                                        act_status = "Phone & Cases"
+                                        
+                                        if 'chat' in chan_lower:
+                                            concurrency = 3
+                                            act_status = "Chat"
+                                        elif 'whatsapp' in chan_lower:
+                                            concurrency = 5
+                                            act_status = "Whatsapp"
+                                        elif 'email' in chan_lower or 'cases' in chan_lower:
+                                            act_status = "Cases"
+                                        
+                                        # Calculate Raw Erlang
+                                        raw_fte = get_required_fte(vol, aht, 0.80)
+                                        # Apply Channel Concurrency
+                                        base_chan_fte = raw_fte / concurrency
+                                        # Apply Shrinkage Factor (Inflate requirement to cover absences)
+                                        req_fte = math.ceil(base_chan_fte / (1 - shrinkage_factor))
+                                        
+                                        forecast_rows.append({
+                                            "Date": d_str, "Time": row['Time'], "Country": row['Country'], 
+                                            "Channel": row['Channel'], "Forecast_Volume": vol, "Req_FTE": req_fte
                                         })
+                                        
+                                        # Assign active agents to the requirement
+                                        for i in range(req_fte):
+                                            if agent_index < len(country_names):
+                                                agent_name = country_names[agent_index]
+                                            else:
+                                                agent_name = f"Overflow_Agent_{str(agent_index - len(country_names) + 1).zfill(2)}_{target_country}"
+                                                
+                                            schedule_rows.append({
+                                                "Country": row['Country'], "YearMonth": ym_str, "Date": d_str, "Time": row['Time'],
+                                                "Agent": agent_name, "Base_Activity": act_status
+                                            })
+                                            agent_index += 1
+                                    
+                                    # Fill remaining agents with Surplus (-)
+                                    while agent_index < len(country_names):
+                                        schedule_rows.append({
+                                            "Country": target_country, "YearMonth": ym_str, "Date": d_str, "Time": t,
+                                            "Agent": country_names[agent_index], "Base_Activity": "-"
+                                        })
+                                        agent_index += 1
                             
                             f_df = pd.DataFrame(forecast_rows)
                             s_df = pd.DataFrame(schedule_rows)
@@ -574,7 +632,7 @@ elif menu == "Forecasting":
                                 if not s_df.empty:
                                     s_df.to_sql('schedule_db', con=conn.engine, if_exists='append', index=False)
                                 
-                                st.success(f"Generated plan for {target_country}! Roster spans {len(country_names)} active CC agents.")
+                                st.success(f"Generated multi-channel plan for {target_country}! Roster spans {len(country_names)} active CC agents.")
                                 sync_from_cloud()
                             except Exception as e:
                                 error_msg = str(e)
@@ -702,7 +760,6 @@ elif menu == "Exception Management":
     with tab2:
         st.write("### Directly Inject Approved Exceptions")
         
-        # Move Market Selection outside the form so it triggers an active roster refresh
         ct_in = st.selectbox("Market Selection", COUNTRIES)
         active_market_agents = get_active_agents_for_country(ct_in)
         
@@ -711,7 +768,6 @@ elif menu == "Exception Management":
             exc_date = c1.date_input("Exception Date")
             exc_time = c2.selectbox("Start Time", generate_time_slots())
             
-            # Use dynamic agent dropdown
             if active_market_agents:
                 agt_in = st.selectbox("Staff Name", active_market_agents)
             else:
