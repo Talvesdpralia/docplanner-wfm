@@ -57,6 +57,10 @@ def apply_custom_design():
         .stTextInput input, .stNumberInput input {{ background-color: transparent !important; border: none !important; box-shadow: none !important; padding: 8px !important; }}
         [data-testid="stMetric"] {{ background: rgba(255, 255, 255, 0.6) !important; backdrop-filter: blur(15px); border: 1px solid rgba(255, 255, 255, 0.8) !important; padding: 16px !important; border-radius: 16px !important; box-shadow: 0 4px 15px rgba(0,0,0,0.02) !important; }}
         .stButton>button {{ background: {DP_TEAL} !important; color: white !important; border-radius: 20px !important; border: none !important; padding: 8px 24px !important; font-weight: 500 !important; box-shadow: 0 4px 12px rgba(0, 196, 167, 0.2) !important; }}
+        
+        /* Custom UI fix for multiselect tags */
+        span[data-baseweb="tag"] {{ background-color: rgba(0, 196, 167, 0.15) !important; color: {DP_TEAL} !important; border: 1px solid rgba(0, 196, 167, 0.4) !important; }}
+        span[data-baseweb="tag"] svg {{ fill: {DP_TEAL} !important; }}
         </style>
     """, unsafe_allow_html=True)
 
@@ -82,19 +86,41 @@ def get_active_agents_for_country(country_name, return_dicts=False):
     df = fetch_google_roster()
     if df.empty: return []
     cols = {str(c).lower().strip(): c for c in df.columns}
-    c_col, n_col, r_col = cols.get('country'), cols.get('name', cols.get('agent')), cols.get('role')
-    e_col, t_col = cols.get('end date', cols.get('end_date')), cols.get('team')
+    c_col = cols.get('country')
+    r_col = cols.get('role')
+    e_col = cols.get('end date', cols.get('end_date'))
+    t_col = cols.get('team')
+    
+    # Hunt for First / Last name combinations to concatenate safely
+    fn_col = next((cols[c] for c in cols if 'first' in c and 'name' in c), None)
+    ln_col = next((cols[c] for c in cols if 'last' in c or 'surname' in c), None)
+    n_col = next((cols[c] for c in cols if 'name' in c or 'agent' in c), None)
 
-    if not (c_col and n_col): return []
+    if not c_col: return []
     mapped_ctry = COUNTRY_MAPPING.get(country_name, country_name)
     df_f = df[df[c_col].astype(str).str.contains(f"{country_name}|{mapped_ctry}", case=False, na=False)]
     
     if r_col: df_f = df_f[df_f[r_col].astype(str).str.contains("CC agent", case=False, na=False)]
     if e_col: df_f = df_f[df_f[e_col].isna() | (df_f[e_col].astype(str).str.strip() == '') | (df_f[e_col].astype(str).str.lower() == 'nan')]
+    
+    agents = []
+    for _, row in df_f.iterrows():
+        # First Name + Surname Concatenation
+        if fn_col and ln_col:
+            name = f"{str(row[fn_col]).strip()} {str(row[ln_col]).strip()}"
+        elif n_col:
+            name = str(row[n_col]).strip()
+        else:
+            continue
+            
+        if name.lower() in ['nan', 'none', '']: continue
+            
+        team_val = str(row.get(t_col, '')).strip().lower() if t_col else "support"
+        agents.append({'Name': name, 'Team': 'hc' if 'hc' in team_val else 'support'})
         
     if return_dicts:
-        return sorted([{'Name': str(row[n_col]), 'Team': 'hc' if t_col and 'hc' in str(row[t_col]).strip().lower() else 'support'} for _, row in df_f.iterrows()], key=lambda x: x['Name'])
-    return sorted(df_f[n_col].dropna().unique().tolist())
+        return sorted(agents, key=lambda x: x['Name'])
+    return sorted(list(set([a['Name'] for a in agents])))
 
 def calculate_erlang_c(vol, aht, target_t, agents):
     if vol <= 0: return 1.0
@@ -119,10 +145,10 @@ def aggregate_wfm(df, group_cols):
     def w_avg(d, col, w_col): return np.average(d[col], weights=d[w_col]) if d[w_col].sum() > 0 else d[col].mean()
     return df.groupby(group_cols).apply(lambda x: pd.Series({'Volume': x['Volume'].sum(), 'FTE': x.get('FTE', pd.Series([0])).mean(), 'SLA': w_avg(x, 'SLA', 'Volume') if 'SLA' in x.columns else 0.80, 'AHT': w_avg(x, 'AHT', 'Volume') if 'AHT' in x.columns else 300})).reset_index()
 
-def generate_time_slots(): return [f"{str(h).zfill(2)}:{str(m).zfill(2)}" for h in range(0, 24) for m in (0, 30)]
+# Restricted time slots to Operating Hours Only (08:00 - 19:30)
+def generate_time_slots(): return [f"{str(h).zfill(2)}:{str(m).zfill(2)}" for h in range(8, 20) for m in (0, 30)]
 
 def update_exc_status(agent, date, stime, status, msg):
-    """Helper to approve/reject exceptions efficiently."""
     try:
         with conn.engine.connect() as c:
             c.execute(text('UPDATE exception_logs SET "Status" = :stat WHERE "Agent" = :agt AND "Date" = :dt AND "Start Time" = :stm'), {"stat": status, "agt": agent, "dt": date, "stm": stime})
@@ -240,7 +266,7 @@ if menu == "Dashboard":
     if not s_db.empty and 'Country' in s_db.columns:
         sch_adh = s_db[s_db['Country'].isin(dash_markets)].copy()
         if dash_agents: sch_adh = sch_adh[sch_adh['Agent'].isin(dash_agents)]
-        sch_adh = sch_adh[~sch_adh['Base_Activity'].isin(["-", "Off", "Lunch"])]
+        sch_adh = sch_adh[~sch_adh['Base_Activity'].isin(["-", "Available", "Off", "Lunch"])]
         
         if not sch_adh.empty:
             merged_adh = sch_adh
@@ -301,8 +327,17 @@ elif menu == "Forecasting":
                         agent_sch = {ag['Name']: {'Team': ag['Team'], 'Start': f"{8+(i%4):02d}:00", 'End': f"{8+(i%4)+9:02d}:00", 'L_S': f"{8+(i%4)+4:02d}:00", 'L_E': f"{8+(i%4)+5:02d}:00", 'Grid': {}, 'Prev': "-"} for i, ag in enumerate(agent_dicts)}
                         
                         for d in pd.date_range(datetime.now().date() + timedelta(days=1), periods=90):
-                            dbase = baseline[baseline['DoW'] == d.dayofweek]
+                            dbase = baseline[baseline['DoW'] == d.dayofweek].copy()
                             reqs = {t: {"Phone & Cases": 0, "Chat": 0, "Whatsapp": 0, "Cases": 0} for t in intervals}
+                            
+                            # Shift Compression: Push overnight volume into the 08:00 AM bucket
+                            night_mask = ~dbase['Time'].isin(intervals)
+                            if night_mask.any():
+                                night_vols = dbase[night_mask].groupby('Channel')['Volume'].sum().reset_index()
+                                dbase = dbase[~night_mask]
+                                for _, nv in night_vols.iterrows():
+                                    if '08:00' in dbase['Time'].values:
+                                        dbase.loc[(dbase['Time'] == '08:00') & (dbase['Channel'] == nv['Channel']), 'Volume'] += nv['Volume']
                             
                             for _, r in dbase.iterrows():
                                 v, a, c_lower = r.get('Volume', 50), r.get('AHT', 300), str(r['Channel']).lower()
@@ -324,8 +359,10 @@ elif menu == "Forecasting":
                                     if reqs[t][act] <= 0: continue
                                     sk = [a for a in av_ag if agent_sch[a]['Team'] == ('support' if act == "Phone & Cases" else ('hc' if act in ["Chat", "Whatsapp"] else agent_sch[a]['Team']))]
                                     sk.sort(key=lambda a: 0 if agent_sch[a]['Prev'] == act else 1)
+                                    # Strict capping: We can only assign up to the physical number of agents we have
                                     for a in sk[:reqs[t][act]]: agent_sch[a]['Grid'][t], agent_sch[a]['Prev'] = act, act; av_ag.remove(a)
-                                for a in av_ag: agent_sch[a]['Grid'][t], agent_sch[a]['Prev'] = "-", "-"
+                                # Any remaining agents stay in "Available" state instead of blank '-'
+                                for a in av_ag: agent_sch[a]['Prev'] = "Available"
                                     
                             for ag, data in agent_sch.items():
                                 for t in intervals: s_rows.append({"Country": target_country, "YearMonth": d.strftime('%Y-%m'), "Date": d.strftime('%Y-%m-%d'), "Time": t, "Agent": ag, "Base_Activity": data['Grid'][t]})
@@ -405,14 +442,14 @@ elif menu == "Capacity Planner (Erlang)":
         f_m, s_m = f_db[f_db['Country'].isin(selected_markets)], s_db[s_db['Country'].isin(selected_markets)]
         if view_scale == "Daily Overview" and 'Date' in f_m.columns:
             demand = f_m.groupby('Date')['Req_FTE'].max().reset_index()
-            supply = s_m[~s_m['Base_Activity'].isin(["-", "Off", "Lunch"])].groupby('Date')['Agent'].nunique().reset_index(name='Scheduled_FTE')
+            supply = s_m[~s_m['Base_Activity'].isin(["-", "Available", "Off", "Lunch"])].groupby('Date')['Agent'].nunique().reset_index(name='Scheduled_FTE')
             gap = demand.merge(supply, on='Date', how='outer').fillna(0)
             gap['Variance'] = gap['Scheduled_FTE'] - gap['Req_FTE']
             st.plotly_chart(px.bar(gap, x='Date', y='Variance', color=np.where(gap['Variance'] < 0, 'Understaffed', 'Overstaffed'), color_discrete_map={'Understaffed':'#ef4444', 'Overstaffed':'#10b981'}), use_container_width=True)
         elif 'Date' in f_m.columns and f_m['Date'].nunique() > 0:
             sel_date = st.selectbox("Select Date", sorted(f_m['Date'].unique()))
             demand = f_m[f_m['Date'] == sel_date].groupby('Time')['Req_FTE'].sum().reset_index()
-            supply = s_m[(s_m['Date'] == sel_date) & (~s_m['Base_Activity'].isin(["-", "Off", "Lunch"]))].groupby('Time')['Agent'].count().reset_index(name='Scheduled_FTE')
+            supply = s_m[(s_m['Date'] == sel_date) & (~s_m['Base_Activity'].isin(["-", "Available", "Off", "Lunch"]))].groupby('Time')['Agent'].count().reset_index(name='Scheduled_FTE')
             gap = demand.merge(supply, on='Time', how='outer').fillna(0).sort_values(by='Time')
             gap['Variance'] = gap['Scheduled_FTE'] - gap['Req_FTE']
             st.plotly_chart(go.Figure(go.Bar(x=gap['Time'], y=gap['Variance'], marker_color=np.where(gap['Variance'] < 0, '#ef4444', '#10b981'))).update_layout(template="plotly_white", title="Variance by Interval"), use_container_width=True)
